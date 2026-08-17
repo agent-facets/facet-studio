@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cleanup on exit
-trap 'rm -rf "$tmp"' EXIT
+# Initialize temp directory variable (must be before trap to avoid set -u error)
+tmp=""
+
+# Cleanup on exit - only remove if tmp was created (handles early exit from adapter check)
+trap 'if [[ -n "$tmp" && -d "$tmp" ]]; then rm -rf "$tmp"; fi' EXIT
 
 # Precheck: verify both adapters are installed
 if ! facet adapter list | grep -q "claude-code"; then
