@@ -2,13 +2,17 @@
 //
 // This file owns three things and nothing else: the server's identity, the
 // capability handshake with the host, and the single seam (`registerAll`) where
-// tools, panels, and auth get wired in. No tools live here yet.
+// tools, panels, and auth get wired in. The tools themselves live in ./tools,
+// ./auth, and ./view/panel — this file only calls their registrars.
 
 import { getUiCapability } from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { pathToFileURL } from "node:url";
+import { registerAuth } from "./auth.js";
+import { registerTools } from "./tools.js";
+import { primeResourceListing, registerPanel } from "./view/panel.js";
 
 /** How this server introduces itself in the MCP handshake. */
 export const SERVER_NAME = "facet-studio";
@@ -48,10 +52,21 @@ export type RegisterAll = (server: McpServer, deps: RegistrationDeps) => void;
  *
  * It runs once per connection, right after the handshake, which is why `deps`
  * carries the host's capabilities: registration can differ between a host that
- * renders UI and one that doesn't. Empty at the scaffold stage on purpose.
+ * renders UI and one that doesn't.
+ *
+ * The order matters, and not for the reason you'd guess. This runs inside the
+ * `oninitialized` callback, where nobody catches a throw — so if one registrar
+ * blew up, every registrar after it would silently never run and the host would
+ * see a half-empty server. The panel is the only one that touches resources
+ * (the riskier registration, since resource capabilities have to be primed
+ * before connect), so it goes last: the tools are already published by then.
+ * The order also fixes what `tools/list` returns — the nine lifecycle tools in
+ * spec-table order, then the two sign-in tools.
  */
-export function registerAll(_server: McpServer, _deps: RegistrationDeps): void {
-    // Intentionally empty. mcp-tools, mcp-panels, and mcp-auth fill this in.
+export function registerAll(server: McpServer, deps: RegistrationDeps): void {
+    registerTools(server, deps);
+    registerAuth(server, deps);
+    registerPanel(server, deps);
 }
 
 /**
@@ -61,7 +76,11 @@ export function registerAll(_server: McpServer, _deps: RegistrationDeps): void {
 export function createServer(deps: StudioServerDeps = {}): McpServer {
     const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
+    // Both listings have to be primed before `connect()`, because everything we
+    // actually register happens after the handshake. See the note on
+    // primeToolListing below, and its twin in view/panel.ts.
     primeToolListing(server);
+    primeResourceListing(server);
 
     const register = deps.registerAll ?? registerAll;
 

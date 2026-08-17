@@ -126,20 +126,6 @@ describe("tools at the scaffold stage", () => {
             }
         });
     }
-
-    test("the default seam registers nothing", async () => {
-        // No injected seam here: this exercises the exported registerAll.
-        const server = createServer();
-        const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities: UI_CAPABLE });
-        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-        try {
-            await expect(client.listTools()).resolves.toMatchObject({ tools: [] });
-        } finally {
-            await client.close();
-            await server.close();
-        }
-    });
 });
 
 test("the brand token package resolves, ready for the panel work", async () => {
