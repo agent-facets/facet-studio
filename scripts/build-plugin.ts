@@ -16,9 +16,9 @@
 // the MCP server imports as a build-time macro to inline its panel view. It
 // lives with the rest of the build tooling because that is what it is.
 
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { basename, join, dirname, isAbsolute, parse as parsePath, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PLUGIN_AUTHOR = { name: "James Dunnam" };
@@ -36,18 +36,243 @@ const MCP_BUNDLE = join("mcp", "server.mjs");
 // this stays a literal string here - it is not a template we fill in.
 const MCP_LAUNCH = { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"] };
 
+// A companion file a skill ships alongside its SKILL.md, after both ends of the
+// copy have been checked: where it is read from, and where it is written to.
+interface Companion {
+  sourcePath: string;
+  outPath: string;
+}
+
+// One skill, agent, or command, with everything the emitters need already
+// validated. Nothing below reaches back into the raw facet.json.
 interface FacetAsset {
+  name: string;
   description: string;
-  files?: string[];
+  files: Companion[];
 }
 
 interface FacetManifest {
   name: string;
   version: string;
   description: string;
-  skills?: Record<string, FacetAsset>;
-  agents?: Record<string, FacetAsset>;
-  commands?: Record<string, FacetAsset>;
+  skills: FacetAsset[];
+  agents: FacetAsset[];
+  commands: FacetAsset[];
+}
+
+// ---------------------------------------------------------------------------
+// Safety guards
+//
+// Two things here can be aimed at the wrong part of the filesystem: the output
+// directory, which the build wipes before writing, and the paths a hand-edited
+// facet.json names. Both are checked up front - before anything is deleted or
+// written - so a build that is going to refuse refuses without doing damage.
+// ---------------------------------------------------------------------------
+
+// Asset names become directory and file names in both trees, so they have to
+// stay plain identifiers: lowercase words joined by single hyphens. Anything
+// else - a slash, a dot, a "..", a leading "/" - could aim a read or a write
+// outside the source and output trees.
+const ASSET_NAME_PATTERN = /^[a-z](-?[a-z0-9])*$/;
+const ASSET_NAME_MAX_LENGTH = 64;
+
+// If one of these sits directly inside a directory, that directory is somebody's
+// source tree, not a build output, and wiping it would destroy real work.
+const SOURCE_TREE_MARKERS = [".git", "facet.json"];
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolves a path down to what it really points at, symlinks and all, so two
+ * different names for the same directory compare equal. A path that doesn't
+ * exist yet is fine: the deepest part that does exist gets resolved and the
+ * rest is appended, which still catches a symlinked parent.
+ */
+async function truePath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    const parent = dirname(path);
+    if (parent === path) return path;
+    return join(await truePath(parent), basename(path));
+  }
+}
+
+/** True when `child` is `parent` itself or sits somewhere beneath it. */
+function isWithin(parent: string, child: string): boolean {
+  if (child === parent) return true;
+  const rel = relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Refuses output directories that a build must never wipe.
+ *
+ * The build starts by deleting outDir, so pointing it at the source tree, at
+ * anything containing the source tree, or at another checkout would erase
+ * files nobody asked to lose. Symlinks are resolved first, so a link to the
+ * source tree is caught as readily as the source tree's own name.
+ *
+ * `repoRoot` is injectable purely so tests can exercise the repo-root rule
+ * against a scratch directory instead of the real repository.
+ */
+export async function assertSafeOutDir(
+  srcDir: string,
+  outDir: string,
+  repoRoot: string = REPO_ROOT,
+): Promise<void> {
+  const src = await truePath(resolve(srcDir));
+  const out = await truePath(resolve(outDir));
+  const because = "and the build wipes its output directory before writing";
+
+  if (out === src) {
+    throw new Error(`refusing to build into ${out}: that is the facet source tree itself, ${because}`);
+  }
+  if (isWithin(out, src)) {
+    throw new Error(`refusing to build into ${out}: it contains the facet source tree ${src}, ${because}`);
+  }
+  if (out === (await truePath(resolve(repoRoot)))) {
+    throw new Error(`refusing to build into ${out}: that is this repository's root, ${because}`);
+  }
+  if (parsePath(out).root === out) {
+    throw new Error(`refusing to build into ${out}: that is a filesystem root, ${because}`);
+  }
+  for (const marker of SOURCE_TREE_MARKERS) {
+    if (await pathExists(join(out, marker))) {
+      throw new Error(
+        `refusing to build into ${out}: it holds a ${marker}, so it is a source tree rather than a generated output directory, ${because}`,
+      );
+    }
+  }
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value === "") {
+    throw new Error(`facet.json: ${label} must be a non-empty string, got ${JSON.stringify(value) ?? typeof value}`);
+  }
+  return value;
+}
+
+function assertAssetName(kind: string, name: string): void {
+  if (name.length > ASSET_NAME_MAX_LENGTH) {
+    throw new Error(
+      `facet.json declares a ${kind} named ${JSON.stringify(name)}: asset names may be at most ` +
+        `${ASSET_NAME_MAX_LENGTH} characters, this one is ${name.length}`,
+    );
+  }
+  if (!ASSET_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `facet.json declares a ${kind} named ${JSON.stringify(name)}: asset names become file and directory ` +
+        `names, so they must be lowercase words joined by single hyphens (${ASSET_NAME_PATTERN.source})`,
+    );
+  }
+}
+
+/**
+ * Checks one asset and hands back the validated form the emitters use.
+ *
+ * `assetDir` is the directory the asset's own files live in - that's what a
+ * declared companion path is relative to. A companion has to land inside the
+ * source tree when read and inside the output tree when written; both absolute
+ * paths are worked out here so nothing downstream re-derives them from the
+ * manifest.
+ */
+async function validateAsset(
+  kind: string,
+  name: string,
+  raw: unknown,
+  srcReal: string,
+  outDir: string,
+  assetDir: string,
+  outAssetDir: string,
+): Promise<FacetAsset> {
+  assertAssetName(kind, name);
+
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`facet.json: ${kind} ${JSON.stringify(name)} must be an object with a description`);
+  }
+  const asset = raw as { description?: unknown; files?: unknown };
+  const description = requireString(asset.description, `${kind} ${JSON.stringify(name)} description`);
+
+  const declared = asset.files ?? [];
+  if (!Array.isArray(declared)) {
+    throw new Error(`facet.json: ${kind} ${JSON.stringify(name)} "files" must be an array of paths`);
+  }
+
+  const files: Companion[] = [];
+  for (const [index, entry] of declared.entries()) {
+    const relPath = requireString(entry, `${kind} ${JSON.stringify(name)} files[${index}]`);
+
+    const sourcePath = await truePath(resolve(assetDir, relPath));
+    if (!isWithin(srcReal, sourcePath) || sourcePath === srcReal) {
+      throw new Error(
+        `facet.json: ${kind} ${JSON.stringify(name)} declares the file ${JSON.stringify(relPath)}, which ` +
+          `resolves to ${sourcePath} - outside the facet source tree ${srcReal}`,
+      );
+    }
+
+    const outPath = resolve(outAssetDir, relPath);
+    if (!isWithin(outDir, outPath) || outPath === outDir) {
+      throw new Error(
+        `facet.json: ${kind} ${JSON.stringify(name)} declares the file ${JSON.stringify(relPath)}, which ` +
+          `would be written to ${outPath} - outside the output directory ${outDir}`,
+      );
+    }
+
+    files.push({ sourcePath, outPath });
+  }
+
+  return { name, description, files };
+}
+
+/**
+ * Turns the parsed facet.json into a manifest the rest of the build can trust.
+ *
+ * facet.json is hand-edited, so every value that ends up in a path or in
+ * emitted frontmatter is checked here rather than assumed. Unrecognized keys
+ * are left alone - this validates what the build actually uses.
+ */
+async function validateManifest(raw: unknown, srcDir: string, outDir: string): Promise<FacetManifest> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("facet.json: expected a JSON object");
+  }
+  const manifest = raw as Record<string, unknown>;
+  const srcReal = await truePath(srcDir);
+
+  async function assetsOf(kind: "skills" | "agents" | "commands"): Promise<FacetAsset[]> {
+    const declared = manifest[kind] ?? {};
+    if (declared === null || typeof declared !== "object" || Array.isArray(declared)) {
+      throw new Error(`facet.json: "${kind}" must be an object keyed by asset name`);
+    }
+    const singular = kind.slice(0, -1);
+    const validated: FacetAsset[] = [];
+    for (const [name, asset] of Object.entries(declared as Record<string, unknown>)) {
+      // Skills own a directory each; agents and commands are single files that
+      // sit directly in their kind's directory.
+      const assetDir = kind === "skills" ? join(srcDir, kind, name) : join(srcDir, kind);
+      const outAssetDir = kind === "skills" ? join(outDir, kind, name) : join(outDir, kind);
+      validated.push(
+        await validateAsset(singular, name, asset, srcReal, outDir, assetDir, outAssetDir),
+      );
+    }
+    return validated;
+  }
+
+  return {
+    name: requireString(manifest.name, "name"),
+    version: requireString(manifest.version, "version"),
+    description: requireString(manifest.description, "description"),
+    skills: await assetsOf("skills"),
+    agents: await assetsOf("agents"),
+    commands: await assetsOf("commands"),
+  };
 }
 
 // Renders a YAML frontmatter block. `description` is arbitrary author text
@@ -76,55 +301,47 @@ async function writeOutFile(path: string, contents: string): Promise<void> {
   await Bun.write(path, contents);
 }
 
-async function emitSkills(
-  srcDir: string,
-  outDir: string,
-  skills: Record<string, FacetAsset> | undefined,
-): Promise<void> {
-  for (const [name, asset] of Object.entries(skills ?? {})) {
-    const srcPath = join(srcDir, "skills", name, "SKILL.md");
+async function emitSkills(srcDir: string, outDir: string, skills: FacetAsset[]): Promise<void> {
+  for (const skill of skills) {
+    const srcPath = join(srcDir, "skills", skill.name, "SKILL.md");
     const body = await readSourceBody(srcPath);
     const frontmatter = renderFrontmatter([
-      ["name", name],
-      ["description", asset.description],
+      ["name", skill.name],
+      ["description", skill.description],
     ]);
-    await writeOutFile(join(outDir, "skills", name, "SKILL.md"), frontmatter + body);
+    await writeOutFile(join(outDir, "skills", skill.name, "SKILL.md"), frontmatter + body);
 
-    for (const companion of asset.files ?? []) {
-      const companionSrc = join(srcDir, "skills", name, companion);
-      const companionBytes = await Bun.file(companionSrc).arrayBuffer();
-      await mkdir(dirname(join(outDir, "skills", name, companion)), { recursive: true });
-      await Bun.write(join(outDir, "skills", name, companion), companionBytes);
+    // Both paths were checked against the source and output trees when the
+    // manifest was validated, so the copy uses them as-is.
+    for (const companion of skill.files) {
+      const source = Bun.file(companion.sourcePath);
+      if (!(await source.exists())) {
+        throw new Error(`missing companion file: ${companion.sourcePath}`);
+      }
+      await mkdir(dirname(companion.outPath), { recursive: true });
+      await Bun.write(companion.outPath, await source.arrayBuffer());
     }
   }
 }
 
-async function emitAgents(
-  srcDir: string,
-  outDir: string,
-  agents: Record<string, FacetAsset> | undefined,
-): Promise<void> {
-  for (const [name, asset] of Object.entries(agents ?? {})) {
-    const srcPath = join(srcDir, "agents", `${name}.md`);
+async function emitAgents(srcDir: string, outDir: string, agents: FacetAsset[]): Promise<void> {
+  for (const agent of agents) {
+    const srcPath = join(srcDir, "agents", `${agent.name}.md`);
     const body = await readSourceBody(srcPath);
     const frontmatter = renderFrontmatter([
-      ["name", name],
-      ["description", asset.description],
+      ["name", agent.name],
+      ["description", agent.description],
     ]);
-    await writeOutFile(join(outDir, "agents", `${name}.md`), frontmatter + body);
+    await writeOutFile(join(outDir, "agents", `${agent.name}.md`), frontmatter + body);
   }
 }
 
-async function emitCommands(
-  srcDir: string,
-  outDir: string,
-  commands: Record<string, FacetAsset> | undefined,
-): Promise<void> {
-  for (const [name, asset] of Object.entries(commands ?? {})) {
-    const srcPath = join(srcDir, "commands", `${name}.md`);
+async function emitCommands(srcDir: string, outDir: string, commands: FacetAsset[]): Promise<void> {
+  for (const command of commands) {
+    const srcPath = join(srcDir, "commands", `${command.name}.md`);
     const body = await readSourceBody(srcPath);
-    const frontmatter = renderFrontmatter([["description", asset.description]]);
-    await writeOutFile(join(outDir, "commands", `${name}.md`), frontmatter + body);
+    const frontmatter = renderFrontmatter([["description", command.description]]);
+    await writeOutFile(join(outDir, "commands", `${command.name}.md`), frontmatter + body);
   }
 }
 
@@ -233,20 +450,36 @@ async function bundleMcpServer(srcDir: string, outDir: string): Promise<void> {
  * Code plugin directory to outDir. outDir is wiped and recreated first, so
  * it always reflects exactly the current source - nothing lingers from a
  * previous build. srcDir is never modified.
+ *
+ * Because that wipe is destructive, and because facet.json is hand-edited,
+ * both the output directory and every path the manifest names are checked
+ * before a single file is deleted or written. A build that refuses leaves the
+ * filesystem exactly as it found it.
  */
 export async function buildPlugin(srcDir: string, outDir: string): Promise<void> {
-  const manifestPath = join(srcDir, "facet.json");
-  const manifestText = await readSourceBody(manifestPath);
-  const manifest = JSON.parse(manifestText) as FacetManifest;
+  const src = resolve(srcDir);
+  const out = resolve(outDir);
 
-  await rm(outDir, { recursive: true, force: true });
-  await mkdir(outDir, { recursive: true });
+  const manifestPath = join(src, "facet.json");
+  const manifestText = await readSourceBody(manifestPath);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(manifestText);
+  } catch (error) {
+    throw new Error(`${manifestPath} is not valid JSON: ${(error as Error).message}`);
+  }
+
+  await assertSafeOutDir(src, out);
+  const manifest = await validateManifest(parsed, src, out);
+
+  await rm(out, { recursive: true, force: true });
+  await mkdir(out, { recursive: true });
 
   // A facet with an MCP server is recognized by having one: there is no switch
   // in facet.json to forget to flip.
-  const hasMcpServer = await Bun.file(join(srcDir, MCP_ENTRY)).exists();
+  const hasMcpServer = await Bun.file(join(src, MCP_ENTRY)).exists();
   if (hasMcpServer) {
-    await bundleMcpServer(srcDir, outDir);
+    await bundleMcpServer(src, out);
   }
 
   const pluginManifest = {
@@ -257,13 +490,13 @@ export async function buildPlugin(srcDir: string, outDir: string): Promise<void>
     ...(hasMcpServer ? { mcpServers: { [manifest.name]: MCP_LAUNCH } } : {}),
   };
   await writeOutFile(
-    join(outDir, ".claude-plugin", "plugin.json"),
+    join(out, ".claude-plugin", "plugin.json"),
     JSON.stringify(pluginManifest, null, 2) + "\n",
   );
 
-  await emitSkills(srcDir, outDir, manifest.skills);
-  await emitAgents(srcDir, outDir, manifest.agents);
-  await emitCommands(srcDir, outDir, manifest.commands);
+  await emitSkills(src, out, manifest.skills);
+  await emitAgents(src, out, manifest.agents);
+  await emitCommands(src, out, manifest.commands);
 }
 
 // CLI entry point. Only runs when this file is executed directly (`bun
@@ -273,7 +506,13 @@ if (import.meta.main) {
   let outArg = "plugin";
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--out") {
-      outArg = args[i + 1] ?? outArg;
+      // A bare trailing `--out` used to fall back to the default silently,
+      // which is a nasty way to wipe a directory the caller never named.
+      const value = args[i + 1];
+      if (value === undefined || value === "" || value.startsWith("--")) {
+        throw new Error("--out needs a directory to build into");
+      }
+      outArg = value;
       i++;
     }
   }
