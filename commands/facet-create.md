@@ -1,5 +1,7 @@
 # Facet Create
 
+If the facet-studio MCP server is connected, run this operation through its `facet_create` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 Scaffold a new facet with skills, agents, or commands.
 
 ## Gather input

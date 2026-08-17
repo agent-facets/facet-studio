@@ -1,5 +1,7 @@
 # Facet Build
 
+If the facet-studio MCP server is connected, run this operation through its `facet_build` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 Validate your facet configuration and generate a distributable artifact.
 
 ## Validate configuration first
