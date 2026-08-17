@@ -24,13 +24,13 @@ facet-studio ships with an MCP server that adds structured panels and rich conte
 
 The server bundles inside the Claude plugin:
 
-| Host | Panels | Status |
-|------|--------|--------|
-| Claude Desktop | Yes | Works with plugin marketplace |
-| ChatGPT | Yes | Plugin marketplace |
-| Cursor | Yes | MCP support enabled |
+| Host | Panels | Support |
+|------|--------|---------|
+| Claude Desktop | Yes | Connector-enabled |
+| ChatGPT | Yes | Connector-enabled |
+| Cursor | Yes | MCP-enabled |
 | Claude Code CLI | No | Terminal only |
-| Codex Desktop | No | Pending upstream panel support |
+| Codex Desktop | No | Pending upstream |
 
 ## Installation
 
