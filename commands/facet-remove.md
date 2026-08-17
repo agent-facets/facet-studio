@@ -8,7 +8,7 @@ Remove named facets from your project. This is destructive — it deletes instal
 
 ## Steps
 
-1. Validate facet names. Each name must match `^(@[a-z](-?[a-z0-9])*/)?[a-z](-?[a-z0-9])*$` (alphanumeric with hyphens, optional scoped namespace). Refuse and stop if any name is invalid.
+1. Validate facet names. Each name must match `^(@[a-z](-?[a-z0-9])*/)?[a-z](-?[a-z0-9])*$` (alphanumeric with hyphens, optional scoped namespace); each part must be ≤ 64 chars. Refuse and stop if any name is invalid.
 
 2. List what's currently installed:
    ```bash
@@ -23,11 +23,11 @@ Remove named facets from your project. This is destructive — it deletes instal
 
 4. Remove the facets:
    ```bash
-   facet remove <name> [<more>...]
+   facet remove '<name>' [<more>...]
    ```
    Or use the alias:
    ```bash
-   facet rm <name> [<more>...]
+   facet rm '<name>' [<more>...]
    ```
 
 5. Confirm removal by listing again:
