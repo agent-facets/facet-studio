@@ -1,29 +1,56 @@
 # facet-modify
 
-Update facet metadata, add/remove assets, or rename facets and their skills/commands.
+Update facet metadata, add or remove assets, or rename skills and commands.
 
-## Task
+## Identify the change
 
-Modify an existing facet by updating its version or description, adding/removing skills and commands, renaming skills/commands, or renaming the facet itself. All operations validate input and confirm the facet builds successfully.
+Prompt for:
+- **Target type:** facet, skill, command, or agent
+- **Target name** (for skill/command/agent)
+- **Action:** rename, add (description), remove, or update (version/privacy)
 
-## Steps
+## Validate names
 
-1. **Identify the modification type:** prompt for target (facet, skill, command, or agent) and the action (rename, add/remove description, update version, set privacy).
+Before passing any value to the shell, validate:
 
-2. **Validate names:** before using any value in a shell command, validate:
-   - Facet name: must match `^[a-z]([a-z0-9]*(-[a-z0-9]+)*)?(@[a-z]([a-z0-9]*(-[a-z0-9]+)*)?)?$` and be ≤ 64 chars total
-   - Skill/command/agent name: must match `^[a-z]([a-z0-9]*(-[a-z0-9]+)*)?$` and be ≤ 64 chars
-   - If validation fails, report the grammar and stop — do not proceed.
+1. **Facet name:** must match `^[a-z](-?[a-z0-9])*$` (scope allowed; each part ≤ 64 chars) and be ≤ 64 chars total.
+2. **Skill/command/agent name:** must match `^[a-z](-?[a-z0-9])*$` and be ≤ 64 chars.
 
-3. **Execute the appropriate modify command:**
-   - **Facet metadata:** `facet modify facet --version '<version>' --json` or `facet modify facet --description '<description>' --json` or `facet modify facet --private --json`
-   - **Skill or command:** `facet modify skill|command '<name>' --add --description '<description>' --json` or `facet modify skill|command '<name>' --remove --json`
-   - **Rename:** `facet modify skill|command '<old-name>' --rename '<new-name>' --json` (note: skills and commands share a namespace; renaming warns the user)
+If validation fails, print the grammar rule and **stop**.
 
-4. **Verify build:** after any modify operation, run:
-   ```
-   facet build --verify
-   ```
-   If the build fails, report the error and offer guidance on facet.json.
+## Apply the change
 
-5. **Rename namespace reminder:** when renaming a skill or command, remind the user that skills and commands exist in the same namespace — the new name must not collide with an existing command or skill.
+Run the appropriate command:
+
+**Facet version, description, or privacy:**
+
+```bash
+facet modify facet --version '<version>' --json
+facet modify facet --description '<description>' --json
+facet modify facet --private --json
+```
+
+**Add or remove asset description:**
+
+```bash
+facet modify skill|command '<name>' --add --description '<description>' --json
+facet modify skill|command '<name>' --remove --json
+```
+
+**Rename skill or command:**
+
+```bash
+facet modify skill|command '<old-name>' --rename '<new-name>' --json
+```
+
+Print the JSON response. **Namespace reminder:** skills and commands share the same namespace — check that the new name doesn't collide with an existing skill or command.
+
+## Verify the build
+
+Run:
+
+```bash
+facet build --verify
+```
+
+If the build succeeds, you're done. If it fails, review the error and check your facet.json for asset body or metadata issues.
