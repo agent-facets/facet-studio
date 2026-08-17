@@ -14,9 +14,39 @@ import { registerAuth } from "./auth.js";
 import { registerTools } from "./tools.js";
 import { primeResourceListing, registerPanel } from "./view/panel.js";
 
+// A Bun macro: this call runs while *this file* is being transpiled or bundled,
+// and its result is baked in below as a plain string literal. Nothing is
+// compiled, read, or fetched once the server is running.
+//
+// It reaches into the repo's build tooling because a macro cannot be imported
+// from a module that pulls in the MCP Apps SDK — see compileBrowserScript for
+// the details. The import itself disappears at build time, so the shipped
+// server bundle has no tie to this path.
+// @ts-ignore -- the build script has no .js twin; Bun resolves it, tsc can't.
+import { compileBrowserScript } from "../../scripts/build-plugin.js" with { type: "macro" };
+
 /** How this server introduces itself in the MCP handshake. */
 export const SERVER_NAME = "facet-studio";
 export const SERVER_VERSION = "0.2.0";
+
+/**
+ * The first line of the compiled view script. Minification renames everything
+ * else, so this is the stable thing to look for when checking that a served
+ * panel really did get its script. Bun macros only accept literal arguments,
+ * which is why the same text is spelled out again in the call below; the panel
+ * integration test reads the served page and fails if the two ever drift.
+ */
+export const VIEW_SCRIPT_BANNER = "// facet-studio panel view";
+
+/**
+ * The panel's browser half, compiled and inlined at build time. The `await` is
+ * a formality — by the time this runs, the macro has already replaced the call
+ * with the finished string, so nothing is pending.
+ */
+const VIEW_SCRIPT: string = await compileBrowserScript(
+    "mcp/src/view/panel.ts",
+    "// facet-studio panel view",
+);
 
 /**
  * Whatever the host advertised under the MCP Apps UI extension, or `undefined`
@@ -62,11 +92,14 @@ export type RegisterAll = (server: McpServer, deps: RegistrationDeps) => void;
  * before connect), so it goes last: the tools are already published by then.
  * The order also fixes what `tools/list` returns — the nine lifecycle tools in
  * spec-table order, then the two sign-in tools.
+ *
+ * The panel gets the compiled view script handed to it. Without it the page
+ * the host loads is inert markup: no bootstrap, no `ontoolresult`, no card.
  */
 export function registerAll(server: McpServer, deps: RegistrationDeps): void {
     registerTools(server, deps);
     registerAuth(server, deps);
-    registerPanel(server, deps);
+    registerPanel(server, deps, { viewScript: VIEW_SCRIPT });
 }
 
 /**

@@ -18,9 +18,9 @@ import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
-import { createServer } from "./server.js";
+import { VIEW_SCRIPT_BANNER, createServer } from "./server.js";
 import { TOOL_SPECS } from "./tools.js";
-import { PANEL_RESOURCE_URI } from "./view/panel.js";
+import { PANEL_CONTAINER_ID, PANEL_RESOURCE_URI, buildPanelHtml } from "./view/panel.js";
 
 /** A host that negotiated the MCP Apps UI extension. */
 const UI_CAPABLE: ClientCapabilities = { extensions: { [EXTENSION_ID]: {} } };
@@ -85,6 +85,19 @@ async function withHost(capabilities: ClientCapabilities, body: (client: Client)
     } finally {
         await connection.close();
     }
+}
+
+/** Reads the panel resource and hands back the document the host would load. */
+async function readPanel(client: Client): Promise<string> {
+    const read = await client.readResource({ uri: PANEL_RESOURCE_URI });
+    return String(read.contents[0]?.text);
+}
+
+/** The contents of the page's one inline module script. */
+function viewScriptOf(html: string): string {
+    const match = /<script type="module">\n([\s\S]*?)\n<\/script>/.exec(html);
+    expect(match).not.toBeNull();
+    return match?.[1] ?? "";
 }
 
 describe("the published surface, over a real client", () => {
@@ -158,6 +171,51 @@ describe("the panel resource", () => {
             expect(String(contents?.text)).toContain("<!doctype html>");
             expect(String(contents?.text)).toContain('id="facet-panel"');
         });
+    });
+
+    test("the page the host loads carries the compiled view script", async () => {
+        // The bug this catches is a quiet one: the panel resource reads
+        // perfectly, the card markup is all there, and nothing ever renders
+        // because the page has no script to run. The document is checked the
+        // way a host sees it — over a real client, not through buildPanelHtml.
+        await withHost(UI_CAPABLE, async client => {
+            const script = viewScriptOf(await readPanel(client));
+
+            expect(script.startsWith(VIEW_SCRIPT_BANNER)).toBe(true);
+            // The banner alone would pass on an empty script, so look for the
+            // bootstrap itself: the name it introduces the App with, and the
+            // element it mounts into. Minification keeps string literals.
+            expect(script).toContain("facet-studio-panel");
+            expect(script).toContain(PANEL_CONTAINER_ID);
+        });
+    });
+
+    test("the view script is inline and alone, and asks for nothing from the network", async () => {
+        await withHost(UI_CAPABLE, async client => {
+            const html = await readPanel(client);
+
+            // One opening tag, one closing tag. A script that closed its own
+            // tag early would show up here as a second one, with the rest of
+            // the bundle spilling into the document as markup.
+            expect(html.match(/<script/g)).toHaveLength(1);
+            expect(html.match(/<\/script>/g)).toHaveLength(1);
+            expect(html).not.toContain("<script src");
+
+            // The same no-markup rule the renderer follows, checked on the
+            // code that actually ships inside the page.
+            const script = viewScriptOf(html);
+            expect(script).not.toContain("innerHTML");
+            expect(script).not.toContain("document.write");
+        });
+    });
+
+    test("a script that would close its own tag is refused, not inlined", async () => {
+        // The guard that makes inlining safe at all. The view script is built
+        // code rather than payload, but nothing about the seam enforces that,
+        // so the seam keeps checking.
+        expect(() => buildPanelHtml({ viewScript: '</script><img src=x onerror="alert(1)">' })).toThrow(
+            /Refusing to inline/,
+        );
     });
 
     test("no tool points a ui-capable host at a view that was never published", async () => {

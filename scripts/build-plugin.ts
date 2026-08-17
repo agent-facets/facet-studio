@@ -11,11 +11,21 @@
 // bundled into the plugin as a single self-contained file and declared in
 // plugin.json, so installing the plugin is all a user has to do - nothing is
 // fetched from npm at run time.
+//
+// One export here is not part of that pipeline: compileBrowserScript, which
+// the MCP server imports as a build-time macro to inline its panel view. It
+// lives with the rest of the build tooling because that is what it is.
 
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PLUGIN_AUTHOR = { name: "James Dunnam" };
+
+// The repo this script lives in, so build inputs can be named by their repo
+// path instead of relative to whatever directory the caller started in.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // The facet's MCP server source, and where its bundle lands in the plugin.
 const MCP_ENTRY = join("mcp", "src", "server.ts");
@@ -115,6 +125,69 @@ async function emitCommands(
     const body = await readSourceBody(srcPath);
     const frontmatter = renderFrontmatter([["description", asset.description]]);
     await writeOutFile(join(outDir, "commands", `${name}.md`), frontmatter + body);
+  }
+}
+
+/**
+ * Compiles a browser module into one self-contained script and hands it back
+ * as a string. Nothing is written to disk.
+ *
+ * This is the odd one out in this file: it emits no file, and the caller isn't
+ * the generator below but the MCP server's own source, which imports it as a
+ * Bun macro (see mcp/src/server.ts). That means the compiled script is baked
+ * into the server the moment the server is transpiled or bundled — the panel
+ * carries its view whether the server is run from source or shipped as a
+ * single bundled file, with nothing to locate or fetch at run time.
+ *
+ * It lives here rather than beside the panel because of a Bun rule: a macro
+ * cannot be imported from a module that pulls in the MCP Apps SDK, whose
+ * bundled `require` shim throws inside the macro sandbox. Build tooling is the
+ * next best home, and this is the build tooling.
+ *
+ * `entry` is a repo-relative path. The build starts from a one-line generated
+ * entry that imports it purely for its side effects, so the bundler can drop
+ * every export the browser never touches — for the panel that means leaving
+ * the server SDK and the HTML shell out of a script meant for an iframe.
+ * Minified output carries no file-path comments, so the same source produces
+ * the same bytes in any checkout, which is what keeps plugin builds
+ * reproducible.
+ */
+export async function compileBrowserScript(entry: string, banner: string): Promise<string> {
+  const entryPath = resolve(REPO_ROOT, entry);
+
+  // The bundler runs as a plain argument list, and the generated entry names
+  // its target as an absolute path, so nothing here depends on the current
+  // directory or goes anywhere near a shell. Macros aren't allowed to call
+  // Bun.build in-process, hence the CLI.
+  const scratch = await mkdtemp(join(tmpdir(), "facet-browser-build-"));
+  try {
+    const generatedEntry = join(scratch, "entry.ts");
+    await Bun.write(generatedEntry, `import ${JSON.stringify(entryPath)};\n`);
+
+    const result = Bun.spawnSync(
+      [
+        process.execPath,
+        "build",
+        generatedEntry,
+        "--target=browser",
+        "--format=esm",
+        "--minify",
+        `--banner=${banner}`,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    if (!result.success) {
+      const details = result.stderr.toString().trim() || result.stdout.toString().trim();
+      throw new Error(`failed to compile ${entry} for the browser (exit ${result.exitCode}):\n${details}`);
+    }
+
+    const script = result.stdout.toString();
+    if (script.trim() === "") {
+      throw new Error(`compiling ${entry} for the browser reported success but produced no script`);
+    }
+    return script;
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
 }
 
