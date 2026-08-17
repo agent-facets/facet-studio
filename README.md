@@ -8,6 +8,7 @@ facet-studio is a toolkit for authoring, building, and installing agent facets â
 |------|------|---------|
 | Skill | using-facets | Ensures the facet CLI is installed and current, then routes facet operations through facet instructions. |
 | Skill | authoring | Guidelines for authoring facet assets: naming conventions, metadata, adapter config, and content standards. |
+| Skill | presentation | Branded presentation contract for facet operations: how to format facet results consistently - status lines, asset labels, tables - in any host, and when to route through the facet-studio MCP server for rich panels. |
 | Agent | facet-author | Headless facet authoring agent that handles scaffolding, asset content, metadata, build, verify, and publish. |
 | Command | facet-create | Scaffold a new facet project. |
 | Command | facet-modify | Edit a facet asset or metadata. |
@@ -20,7 +21,7 @@ facet-studio is a toolkit for authoring, building, and installing agent facets â
 
 ## Branded panels and the MCP server
 
-facet-studio ships with an MCP server that adds structured panels and rich context to compatible hosts. Panels render natively in Claude Desktop, ChatGPT, and Cursor; Claude Code CLI is terminal-only and returns full text output. Codex Desktop does not render panels yet (upstream bug tracked). Every operation returns complete text regardlessâ€”panels are an enhancement, not a requirement.
+facet-studio ships with an MCP server and a Claude Code plugin. The plugin provides tools and text output in Claude Code; the MCP server adds structured panels and rich context to Claude Desktop (via connector setup), ChatGPT, and Cursor. Claude Code CLI is terminal-only and returns full text output. Codex Desktop does not render panels yet (upstream bug tracked). Every operation returns complete text regardlessâ€”panels are an enhancement, not a requirement.
 
 The server bundles inside the Claude plugin:
 
