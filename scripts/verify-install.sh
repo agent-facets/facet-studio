@@ -47,7 +47,7 @@ declare -a required_paths=(
   ".claude/commands/facet-remove.md"
   ".claude/commands/facet-update.md"
   ".claude/agents/facet-author.md"
-  # codex adapter (11 files)
+  # codex adapter (11 files) - adapter materialization only; Codex does not scan .agents/commands/
   ".agents/skills/using-facets/SKILL.md"
   ".agents/skills/authoring/SKILL.md"
   ".agents/commands/facet-add.md"
@@ -69,18 +69,35 @@ for path in "${required_paths[@]}"; do
   fi
 done
 
-# Check that .claude and .agents SKILL.md files start with frontmatter
+# Check that .claude and .agents SKILL.md files have required frontmatter keys
 for skill_path in .claude/skills/*/SKILL.md .agents/skills/*/SKILL.md; do
   if ! head -1 "$skill_path" | grep -q "^---$"; then
     echo "error: $skill_path missing frontmatter (should start with ---)" >&2
     exit 1
   fi
+  if ! grep -q "^name:" "$skill_path"; then
+    echo "error: $skill_path missing 'name:' in frontmatter" >&2
+    exit 1
+  fi
+  if ! grep -q "^description:" "$skill_path"; then
+    echo "error: $skill_path missing 'description:' in frontmatter" >&2
+    exit 1
+  fi
 done
 
-# Check that .codex/agents/facet-author.toml contains 'description'
-if ! grep -q "description" .codex/agents/facet-author.toml; then
-  echo "error: .codex/agents/facet-author.toml missing 'description' field" >&2
+# Check that .codex/agents/facet-author.toml has all required fields
+if ! grep -q "^name = " .codex/agents/facet-author.toml; then
+  echo "error: .codex/agents/facet-author.toml missing 'name = ' field" >&2
+  exit 1
+fi
+if ! grep -q "^description = " .codex/agents/facet-author.toml; then
+  echo "error: .codex/agents/facet-author.toml missing 'description = ' field" >&2
+  exit 1
+fi
+if ! grep -q "^developer_instructions = " .codex/agents/facet-author.toml; then
+  echo "error: .codex/agents/facet-author.toml missing 'developer_instructions = ' field" >&2
   exit 1
 fi
 
+echo "NOTE: .agents/commands/ checks verify adapter materialization only; Codex does not scan .agents/commands/ (upstream adapter issue)"
 echo "verify-install: OK"
