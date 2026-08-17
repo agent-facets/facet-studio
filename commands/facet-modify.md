@@ -1,8 +1,8 @@
 # Facet Modify
 
-If the facet-studio MCP server is connected, run this operation through its `facet_modify` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
-
 Update facet metadata, add or remove assets, or rename skills and commands.
+
+If the facet-studio MCP server is connected, run this operation through its `facet_modify` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
 
 ## Identify the change
 

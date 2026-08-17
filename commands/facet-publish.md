@@ -1,8 +1,8 @@
 # Facet Publish
 
-For identity verification, use `facet_whoami` to check your current identity or `facet_login` to set credentials through the connected facet-studio MCP server. Without MCP, use the CLI commands `facet whoami` and `facet login` instead.
-
 Publish your facet to the registry. Published versions are immutable—once released, they cannot be modified or deleted.
+
+For identity verification, use `facet_whoami` to check your current identity or `facet_login` to set credentials through the connected facet-studio MCP server. Without MCP, use the CLI commands `facet whoami` and `facet login` instead.
 
 ## Authenticate to the registry
 
