@@ -32,6 +32,22 @@ The server bundles inside the Claude plugin:
 | Claude Code CLI | No | Terminal only |
 | Codex Desktop | No | Pending upstream |
 
+## See the panels in Claude Desktop
+
+To view the branded panels in Claude Desktop chat, clone the repository and build the plugin first:
+
+```bash
+bun scripts/build-plugin.ts
+```
+
+Then add a custom MCP server in Claude Desktop, pointing to the bundled server file:
+
+```
+node /absolute/path/to/facet-studio/plugin/mcp/server.mjs
+```
+
+The panels will appear in Claude Desktop chat. Claude Code CLI remains text-only and this setup is separate from the Claude Code plugin install—the plugin gives you the tools in Claude Code, while the connector install gives you the panels in Claude Desktop.
+
 ## Installation
 
 ### Claude Code / Claude Desktop
