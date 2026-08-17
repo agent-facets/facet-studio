@@ -1,4 +1,4 @@
-# facet-create
+# Facet Create
 
 Scaffold a new facet with skills, agents, or commands.
 

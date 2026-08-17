@@ -2,6 +2,8 @@
 description: "Publish the built facet to the registry, handling auth and version bumps."
 ---
 
+# Facet Publish
+
 Publish your facet to the registry. Published versions are immutable—once released, they cannot be modified or deleted.
 
 ## Authenticate to the registry

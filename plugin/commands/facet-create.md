@@ -2,7 +2,7 @@
 description: "Scaffold a new facet project headlessly with facet create."
 ---
 
-# facet-create
+# Facet Create
 
 Scaffold a new facet with skills, agents, or commands.
 

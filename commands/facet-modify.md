@@ -1,4 +1,4 @@
-# facet-modify
+# Facet Modify
 
 Update facet metadata, add or remove assets, or rename skills and commands.
 

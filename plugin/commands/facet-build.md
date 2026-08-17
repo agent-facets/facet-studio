@@ -2,6 +2,8 @@
 description: "Validate the current facet and build the distributable archive."
 ---
 
+# Facet Build
+
 Validate your facet configuration and generate a distributable artifact.
 
 ## Validate configuration first

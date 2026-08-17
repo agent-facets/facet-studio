@@ -2,7 +2,7 @@
 description: "Edit a facet asset or its metadata headlessly with facet modify."
 ---
 
-# facet-modify
+# Facet Modify
 
 Update facet metadata, add or remove assets, or rename skills and commands.
 

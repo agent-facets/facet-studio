@@ -1,3 +1,5 @@
+# Facet Build
+
 Validate your facet configuration and generate a distributable artifact.
 
 ## Validate configuration first
