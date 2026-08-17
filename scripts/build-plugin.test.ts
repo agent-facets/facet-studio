@@ -24,16 +24,36 @@ async function tempDir(): Promise<string> {
 // naive `description: <raw>` YAML line if we ever stopped JSON-encoding it.
 const INJECTION_DESCRIPTION = 'x: "y" # {z}\nnewline';
 
+// What a fixture MCP server prints when it runs. The greeting lives in a
+// second module so the bundle has to inline a local import to work at all.
+const SERVER_GREETING = "fixture server online";
+
 interface FixtureOptions {
   skillDescription?: string;
   agentDescription?: string;
   commandDescription?: string;
+  /**
+   * Give the fixture an MCP server at mcp/src/server.ts. "broken" writes one
+   * that cannot possibly bundle (it imports a package that isn't installed).
+   */
+  mcpServer?: "working" | "broken";
 }
 
 // Writes a minimal facet source tree: one skill (with a companion file),
 // one agent, one command. Returns the source dir.
 async function writeFixtureFacet(opts: FixtureOptions = {}): Promise<string> {
   const src = await tempDir();
+
+  if (opts.mcpServer !== undefined) {
+    await mkdir(join(src, "mcp", "src"), { recursive: true });
+    await Bun.write(join(src, "mcp", "src", "greeting.ts"), `export const GREETING = "${SERVER_GREETING}";\n`);
+    await Bun.write(
+      join(src, "mcp", "src", "server.ts"),
+      opts.mcpServer === "broken"
+        ? 'import { nope } from "@not-installed/definitely-missing";\nconsole.log(nope);\n'
+        : 'import { GREETING } from "./greeting.ts";\nprocess.stdout.write(`${GREETING}\\n`);\n',
+    );
+  }
 
   await mkdir(join(src, "skills", "using-facets"), { recursive: true });
   await mkdir(join(src, "agents"), { recursive: true });
@@ -226,5 +246,113 @@ describe("buildPlugin", () => {
 
     const after = await walk(src);
     expect(after).toEqual(before);
+  });
+
+  test("a facet without an MCP server gets no mcpServers key and no mcp directory", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    const manifest = await Bun.file(join(out, ".claude-plugin", "plugin.json")).json();
+    expect(manifest.mcpServers).toBeUndefined();
+    expect((await walk(out)).some((rel) => rel.startsWith("mcp"))).toBe(false);
+  });
+});
+
+describe("buildPlugin with an MCP server", () => {
+  test("plugin.json declares the server under the facet's name, launched from the plugin root", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    const manifest = await Bun.file(join(out, ".claude-plugin", "plugin.json")).json();
+    // Whole-manifest comparison: the v1 fields have to survive untouched, and
+    // the new key has to be exactly this shape - the launch path is a literal
+    // ${CLAUDE_PLUGIN_ROOT}, expanded by Claude Code, not by us.
+    expect(manifest).toEqual({
+      name: "fixture-facet",
+      version: "0.1.0",
+      description: "A fixture facet for build-plugin tests.",
+      author: { name: "James Dunnam" },
+      mcpServers: {
+        "fixture-facet": {
+          command: "node",
+          args: ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"],
+        },
+      },
+    });
+  });
+
+  test("the declared bundle exists, is non-empty, and has the entry's local imports inlined", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    const bundle = Bun.file(join(out, "mcp", "server.mjs"));
+    expect(await bundle.exists()).toBe(true);
+    expect(bundle.size).toBeGreaterThan(0);
+    // greeting.ts is never copied, so seeing its text proves the bundler
+    // inlined the module rather than leaving an import to resolve at run time.
+    expect(await bundle.text()).toContain(SERVER_GREETING);
+
+    const emitted = (await walk(out)).filter((rel) => rel.startsWith("mcp"));
+    expect(emitted).toEqual([join("mcp", "server.mjs")]);
+  });
+
+  test("the bundled server actually runs under node", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    // Existence is not enough: plugin validation passes on a file that cannot
+    // run, so the test runs it the way the plugin loader would.
+    const run = Bun.spawnSync(["node", join(out, "mcp", "server.mjs")], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(run.stderr.toString()).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain(SERVER_GREETING);
+  });
+
+  test("determinism: two builds produce a byte-identical bundle and manifest", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out1 = await tempDir();
+    const out2 = await tempDir();
+
+    await buildPlugin(src, out1);
+    await buildPlugin(src, out2);
+
+    const files1 = await walk(out1);
+    expect(files1).toEqual(await walk(out2));
+    expect(files1).toContain(join("mcp", "server.mjs"));
+
+    for (const rel of files1) {
+      const b1 = await Bun.file(join(out1, rel)).arrayBuffer();
+      const b2 = await Bun.file(join(out2, rel)).arrayBuffer();
+      expect(Buffer.from(b1).equals(Buffer.from(b2))).toBe(true);
+    }
+  });
+
+  test("bundling leaves the source tree exactly as it found it", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    const before = await walk(src);
+
+    await buildPlugin(src, out);
+
+    expect(await walk(src)).toEqual(before);
+  });
+
+  test("a server that cannot bundle fails the build instead of declaring a missing file", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "broken" });
+    const out = await tempDir();
+
+    await expect(buildPlugin(src, out)).rejects.toThrow(/failed to bundle/);
+
+    // Nothing may claim a server that isn't there: plugin validation happily
+    // passes a manifest whose mcpServers file is missing, so the generator is
+    // the only thing standing between a broken bundle and a shipped plugin.
+    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(false);
   });
 });

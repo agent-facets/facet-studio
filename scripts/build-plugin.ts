@@ -6,11 +6,25 @@
 // manifest plus per-asset markdown files with YAML frontmatter. It never
 // writes back into the source tree, and running it twice on the same input
 // must produce byte-identical output (no timestamps, no random ids).
+//
+// When the facet carries an MCP server (mcp/src/server.ts), the server is
+// bundled into the plugin as a single self-contained file and declared in
+// plugin.json, so installing the plugin is all a user has to do - nothing is
+// fetched from npm at run time.
 
 import { mkdir, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 
 const PLUGIN_AUTHOR = { name: "James Dunnam" };
+
+// The facet's MCP server source, and where its bundle lands in the plugin.
+const MCP_ENTRY = join("mcp", "src", "server.ts");
+const MCP_BUNDLE = join("mcp", "server.mjs");
+
+// How Claude Code is told to launch the server. `${CLAUDE_PLUGIN_ROOT}` is
+// substituted by the plugin loader with wherever the plugin was installed, so
+// this stays a literal string here - it is not a template we fill in.
+const MCP_LAUNCH = { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"] };
 
 interface FacetAsset {
   description: string;
@@ -105,6 +119,43 @@ async function emitCommands(
 }
 
 /**
+ * Bundles the facet's MCP server into the plugin output as one standalone
+ * file: every dependency is inlined, so the installed plugin needs nothing
+ * from npm and no node_modules directory of its own.
+ *
+ * The bundler runs as a plain argument list - no shell is involved anywhere,
+ * so a directory name with a space or a quote in it is just a name. It writes
+ * only into outDir; the source tree is read-only here as everywhere else.
+ *
+ * Throws if the bundler fails or produces an empty file. That is deliberate:
+ * plugin.json is written after this, so a build either ships a real server or
+ * it ships no declaration at all - never a declaration pointing at a file that
+ * isn't there (which plugin validation does not catch).
+ */
+async function bundleMcpServer(srcDir: string, outDir: string): Promise<void> {
+  // The bundler creates the directories it needs, so a failed build leaves the
+  // output directory empty rather than half-populated.
+  const outFile = join(outDir, MCP_BUNDLE);
+
+  // process.execPath is the Bun that is running this script, so the build uses
+  // the same toolchain the caller invoked rather than whatever `bun` happens to
+  // be first on PATH.
+  const result = Bun.spawnSync(
+    [process.execPath, "build", MCP_ENTRY, "--target=node", "--outfile", outFile],
+    { cwd: srcDir, stdout: "pipe", stderr: "pipe" },
+  );
+  if (!result.success) {
+    const details = result.stderr.toString().trim() || result.stdout.toString().trim();
+    throw new Error(`failed to bundle ${MCP_ENTRY} (exit ${result.exitCode}):\n${details}`);
+  }
+
+  const bundle = Bun.file(outFile);
+  if (!(await bundle.exists()) || bundle.size === 0) {
+    throw new Error(`bundling ${MCP_ENTRY} reported success but wrote no bundle at ${outFile}`);
+  }
+}
+
+/**
  * Reads facet.json and the asset files under srcDir, and writes a Claude
  * Code plugin directory to outDir. outDir is wiped and recreated first, so
  * it always reflects exactly the current source - nothing lingers from a
@@ -118,11 +169,19 @@ export async function buildPlugin(srcDir: string, outDir: string): Promise<void>
   await rm(outDir, { recursive: true, force: true });
   await mkdir(outDir, { recursive: true });
 
+  // A facet with an MCP server is recognized by having one: there is no switch
+  // in facet.json to forget to flip.
+  const hasMcpServer = await Bun.file(join(srcDir, MCP_ENTRY)).exists();
+  if (hasMcpServer) {
+    await bundleMcpServer(srcDir, outDir);
+  }
+
   const pluginManifest = {
     name: manifest.name,
     version: manifest.version,
     description: manifest.description,
     author: PLUGIN_AUTHOR,
+    ...(hasMcpServer ? { mcpServers: { [manifest.name]: MCP_LAUNCH } } : {}),
   };
   await writeOutFile(
     join(outDir, ".claude-plugin", "plugin.json"),
