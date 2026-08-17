@@ -20,13 +20,17 @@ Add a facet by name, version, or source. The source can be a registry entry, a G
    - Local paths: must start with `./`. Refuse if it doesn't, and verify the path is inside the project tree.
    - Stop and explain the error if validation fails.
 
-3. **Run facet add.** If the CLI says you need an adapter, install one:
+3. **Run facet add.** First attempt to add the facet:
    ```bash
    facet add '<source>'
    ```
-   If this fails with "no adapter installed", install the Claude Code adapter:
+   If this fails with "no adapter installed", you need to install an adapter before retrying. Install one:
    ```bash
    facet adapter add claude-code
+   ```
+   or
+   ```bash
+   facet adapter add codex
    ```
    Then retry `facet add '<source>'`.
 

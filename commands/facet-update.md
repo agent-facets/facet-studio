@@ -13,23 +13,28 @@ Update an installed facet to a different version. Updating is a re-add operation
    facet list
    ```
 
-2. **Re-add the facet at the target version.** Specify the same facet name with a new version constraint:
+2. **Validate the name and version before proceeding:**
+   - The facet name (from `facet list`) must be valid: registry names (bare or scoped) must match `^(@[a-z](-?[a-z0-9])*/)?[a-z](-?[a-z0-9])*(@[0-9*][0-9A-Za-z.*-]*)?$`, with each name part ≤ 64 chars.
+   - The version constraint can be a specific version (`2.0.0`), a minor range (`2.*`), or any matching semver.
+   - Stop and explain the error if validation fails.
+
+3. **Re-add the facet at the target version.** Specify the same facet name with a new version constraint:
    ```bash
    facet add '<name>@<new-version>'
    ```
    Examples: `facet add 'my-facet@2.0.0'`, `facet add 'my-facet@2.*'`.
 
-3. **Confirm the update** by listing again:
+4. **Confirm the update** by listing again:
    ```bash
    facet list
    ```
 
-4. **If cloning elsewhere, use the frozen lockfile.** After adding or updating, anyone cloning the project can restore all facets exactly as installed:
+5. **If cloning elsewhere, use the frozen lockfile.** After adding or updating, anyone cloning the project can restore all facets exactly as installed:
    ```bash
    facet install --frozen-lockfile
    ```
 
-5. **Commit both files.** Always commit the manifest and lockfile together:
+6. **Commit both files.** Always commit the manifest and lockfile together:
    ```bash
    git add facets.json facets.lock
    git commit -m "Update facet: <name> to <new-version>"
