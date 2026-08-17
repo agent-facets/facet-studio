@@ -23,11 +23,11 @@ Remove named facets from your project. This is destructive — it deletes instal
 
 4. Remove the facets:
    ```bash
-   facet remove '<name>' [<more>...]
+   facet remove '<name>' ['<more>' ...]
    ```
    Or use the alias:
    ```bash
-   facet rm '<name>' [<more>...]
+   facet rm '<name>' ['<more>' ...]
    ```
 
 5. Confirm removal by listing again:
