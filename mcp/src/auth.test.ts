@@ -13,7 +13,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult, ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { EXTENSION_ID } from "@modelcontextprotocol/ext-apps/server";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,11 +25,14 @@ import {
     browserCommand,
     constantTimeEquals,
     createPkce,
+    fetchIdentity,
+    isUsableBearerToken,
     readAuthConfig,
     readCredentialsFile,
     registerAuth,
     renderCredentialsIni,
     runBrowserLogin,
+    sanitizeUntrusted,
     scrubSecrets,
     startLoopback,
     writeCredentials,
@@ -37,10 +40,14 @@ import {
 import { createServer as createStudioServer } from "./server.js";
 
 const UI_CAPABLE: ClientCapabilities = { extensions: { [EXTENSION_ID]: {} } };
+/** A host that negotiated no UI extension at all — no panel exists for it. */
+const TEXT_ONLY: ClientCapabilities = {};
 
 /** A JWT-shaped string, so the redaction backstop has something real to catch. */
 const FAKE_JWT = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ sub: "u-1" })).toString("base64url")}.c2lnbmF0dXJlLWJ5dGVz`;
 const FAKE_PAT = "fct_pub_ABCDEFGHJKMN.PQRSTUVWXYZ23456789ABCDEFGHJKMNPQ";
+/** A credential that is already on disk and working — the thing worth not losing. */
+const EXISTING_PAT = "fct_pub_OLDOLDOLDOLD.KEEPTHISONE23456789ABCDEFGHJKMN";
 
 const PROFILE = {
     user_uuid: "11111111-2222-3333-4444-555555555555",
@@ -122,17 +129,23 @@ function happyHandlers(): Record<string, () => Response> {
  * Stands in for the browser: reads the authorize URL, then drives the redirect
  * back to the loopback listener with whatever state/code the test wants.
  */
-function browserThatRedirects(options: { state?: "match" | "wrong"; code?: string | null; error?: string } = {}) {
+function browserThatRedirects(options: { state?: "match" | "wrong" | "absent"; code?: string | null; error?: string } = {}) {
     const seen: { authorizeUrl?: string; callbackStatus?: number; callbackBody?: string } = {};
     const openBrowser = async (url: string): Promise<void> => {
         seen.authorizeUrl = url;
         const authorize = new URL(url);
         const redirect = new URL(authorize.searchParams.get("redirect_uri") ?? "");
+        // A real provider echoes the state back on every redirect it sends,
+        // including the ones that report an error. Leaving it out is what a
+        // forged callback looks like, so "absent" is a hostile case, not a
+        // provider one.
+        if (options.state !== "absent") {
+            const state = authorize.searchParams.get("state") ?? "";
+            redirect.searchParams.set("state", options.state === "wrong" ? `${state.slice(1)}X` : state);
+        }
         if (options.error !== undefined) {
             redirect.searchParams.set("error", options.error);
         } else {
-            const state = authorize.searchParams.get("state") ?? "";
-            redirect.searchParams.set("state", options.state === "wrong" ? `${state.slice(1)}X` : state);
             const code = options.code === undefined ? "auth-code-xyz" : options.code;
             if (code !== null) redirect.searchParams.set("code", code);
         }
@@ -151,6 +164,7 @@ function ports(overrides: Partial<AuthPorts> = {}): AuthPorts {
         openBrowser: async () => undefined,
         randomBytes,
         callbackTimeoutMs: 5_000,
+        requestTimeoutMs: 10_000,
         ...overrides,
     };
 }
@@ -244,7 +258,47 @@ describe("PKCE material", () => {
         expect(constantTimeEquals("abc", "abd")).toBe(false);
         expect(constantTimeEquals("abc", "abcd")).toBe(false);
         expect(constantTimeEquals("", "")).toBe(true);
+        expect(constantTimeEquals("abc", "")).toBe(false);
+        expect(constantTimeEquals("x".repeat(5000), `${"x".repeat(4999)}y`)).toBe(false);
+        expect(constantTimeEquals("x".repeat(5000), "x".repeat(5000))).toBe(true);
     });
+
+    test("comparing costs the same whether the lengths match or not", () => {
+        // The length check the comparison used to open with was itself the
+        // leak. It answered "is the secret this long?" before looking at a
+        // single character, and it answered instantly — so an attacker could
+        // find the length by timing alone and only then start guessing bytes.
+        // Hashing both sides first removes the shortcut, and that shows up as
+        // work: a length mismatch now costs about what a byte mismatch costs.
+        //
+        // Deliberately a wide bound. Short-circuiting scores ~0.00 here and
+        // digest comparison scores ~0.85, so anything near the middle is a
+        // clear answer either way. The inputs are large so the difference is
+        // milliseconds rather than noise.
+        const size = 1 << 22;
+        const base = "a".repeat(size);
+        const sameLength = `${"a".repeat(size - 1)}b`;
+        const shorter = "a".repeat(size - 1);
+
+        expect(constantTimeEquals(base, sameLength)).toBe(false);
+        expect(constantTimeEquals(base, shorter)).toBe(false);
+
+        const median = (run: () => void): number => {
+            const samples: number[] = [];
+            for (let i = 0; i < 7; i += 1) {
+                const started = performance.now();
+                run();
+                samples.push(performance.now() - started);
+            }
+            samples.sort((a, b) => a - b);
+            return samples[3] as number;
+        };
+
+        const equalLengths = median(() => void constantTimeEquals(base, sameLength));
+        const differentLengths = median(() => void constantTimeEquals(base, shorter));
+        expect(equalLengths).toBeGreaterThan(0);
+        expect(differentLengths / equalLengths).toBeGreaterThan(0.25);
+    }, 30_000);
 });
 
 describe("the loopback listener", () => {
@@ -258,16 +312,63 @@ describe("the loopback listener", () => {
         }
     });
 
-    test("a mismatched state aborts the flow and closes the listener", async () => {
+    test("a redirect that can't prove the state is ignored, not obeyed", async () => {
         const session = await startLoopback("the-real-state", 5_000);
         try {
-            const response = await fetch(`${session.redirectUri}?state=not-the-real-state&code=abc`);
-            expect(response.status).toBe(400);
-            expect(await response.text()).toContain("could not be verified");
-            await expect(session.code).rejects.toThrow(/state value that doesn't match/);
+            const forged = await fetch(`${session.redirectUri}?state=not-the-real-state&code=abc`);
+            expect(forged.status).toBe(400);
+            expect(await forged.text()).toContain("could not be verified");
 
-            // Single use: the listener is gone, so a replay can't try again.
-            await expect(fetch(`${session.redirectUri}?state=the-real-state&code=abc`)).rejects.toThrow();
+            // It didn't burn the single use and it didn't end the sign-in, so
+            // the redirect the user's own browser sends still lands.
+            const real = await fetch(`${session.redirectUri}?state=the-real-state&code=the-code`);
+            expect(real.status).toBe(200);
+            expect(await session.code).toBe("the-code");
+        } finally {
+            session.close();
+        }
+    });
+
+    test("an error callback with no state cannot cancel a sign-in in progress", async () => {
+        // Anything running on this machine — and any web page the user has
+        // open — can send this exact request. If it could end the flow, one
+        // unauthenticated GET would be enough to stop somebody signing in.
+        const session = await startLoopback("the-real-state", 5_000);
+        try {
+            const hostile = await fetch(`${session.redirectUri}?error=access_denied&error_description=go+away`);
+            expect(hostile.status).toBe(400);
+            expect(await hostile.text()).toContain("could not be verified");
+
+            const real = await fetch(`${session.redirectUri}?state=the-real-state&code=the-code`);
+            expect(real.status).toBe(200);
+            expect(await session.code).toBe("the-code");
+        } finally {
+            session.close();
+        }
+    });
+
+    test("an error callback with the wrong state is ignored too", async () => {
+        const session = await startLoopback("the-real-state", 5_000);
+        try {
+            const hostile = await fetch(`${session.redirectUri}?state=some-other-state&error=access_denied`);
+            expect(hostile.status).toBe(400);
+
+            const real = await fetch(`${session.redirectUri}?state=the-real-state&code=the-code`);
+            expect(real.status).toBe(200);
+            expect(await session.code).toBe("the-code");
+        } finally {
+            session.close();
+        }
+    });
+
+    test("a verified redirect really is single use", async () => {
+        const session = await startLoopback("s", 5_000);
+        try {
+            expect((await fetch(`${session.redirectUri}?state=s&code=first`)).status).toBe(200);
+            expect(await session.code).toBe("first");
+            // The listener is gone once a verified redirect has been handled,
+            // so a replay has nothing to talk to.
+            await expect(fetch(`${session.redirectUri}?state=s&code=second`)).rejects.toThrow();
         } finally {
             session.close();
         }
@@ -296,12 +397,27 @@ describe("the loopback listener", () => {
         }
     });
 
-    test("a provider error comes back as an abort, not a hang", async () => {
+    test("a provider error that proves the state comes back as an abort, not a hang", async () => {
         const session = await startLoopback("s", 5_000);
         try {
-            const response = await fetch(`${session.redirectUri}?error=access_denied&error_description=user+said+no`);
+            const response = await fetch(`${session.redirectUri}?state=s&error=access_denied&error_description=user+said+no`);
             expect(response.status).toBe(400);
             await expect(session.code).rejects.toThrow(/user said no/);
+        } finally {
+            session.close();
+        }
+    });
+
+    test("an error description cannot forge extra lines in the message", async () => {
+        const session = await startLoopback("s", 5_000);
+        try {
+            await fetch(`${session.redirectUri}?state=s&error=x&error_description=${encodeURIComponent("nope\n  credential: fct_pub_AAAABBBB.CCCCDDDD")}`);
+            const error = await session.code.then(
+                () => null,
+                (e: unknown) => e as Error,
+            );
+            expect(error?.message).not.toContain("\n");
+            expect(error?.message).not.toContain("fct_pub_");
         } finally {
             session.close();
         }
@@ -354,15 +470,101 @@ describe("the browser sign-in", () => {
         expect(leftovers).toEqual([]);
     });
 
-    test("a mismatched state stops before anything is exchanged or written", async () => {
+    test("a mismatched state exchanges nothing and writes nothing", async () => {
+        // The redirect is dropped rather than obeyed, so the flow ends the only
+        // way an unverifiable sign-in should: by running out of time, having
+        // touched nothing.
         const browser = browserThatRedirects({ state: "wrong" });
         const fetcher = mockFetch(happyHandlers());
         const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
 
-        await expect(runBrowserLogin(config, ports({ fetch: fetcher.fn, openBrowser: browser.openBrowser }))).rejects.toThrow(
-            /state value that doesn't match/,
-        );
+        await expect(
+            runBrowserLogin(config, ports({ fetch: fetcher.fn, openBrowser: browser.openBrowser, callbackTimeoutMs: 250 })),
+        ).rejects.toThrow(/gave up waiting/);
+        expect(browser.seen.callbackStatus).toBe(400);
         expect(fetcher.calls).toEqual([]);
+        expect(existsSync(config.credentialsPath)).toBe(false);
+    });
+
+    test("a hostile error callback does not stop the real sign-in behind it", async () => {
+        const fetcher = mockFetch(happyHandlers());
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        const statuses: number[] = [];
+        const openBrowser = async (url: string): Promise<void> => {
+            const authorize = new URL(url);
+            const redirect = new URL(authorize.searchParams.get("redirect_uri") ?? "");
+
+            // Somebody else's GET, arriving first, with no state to show for it.
+            const forged = new URL(redirect.toString());
+            forged.searchParams.set("error", "access_denied");
+            statuses.push((await fetch(forged.toString())).status);
+
+            // Then the browser the user is actually looking at.
+            redirect.searchParams.set("state", authorize.searchParams.get("state") ?? "");
+            redirect.searchParams.set("code", "auth-code-xyz");
+            statuses.push((await fetch(redirect.toString())).status);
+        };
+
+        const result = await runBrowserLogin(config, ports({ fetch: fetcher.fn, openBrowser }));
+        expect(statuses).toEqual([400, 200]);
+        expect(result.username).toBe("brigade-tester");
+        expect(readCredentialsFile(config.credentialsPath)).toBe(FAKE_PAT);
+    });
+
+    test("the registry confirms the new token before it is written, not after", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, EXISTING_PAT);
+
+        let onDiskWhenChecked: string | undefined;
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => {
+            onDiskWhenChecked = readCredentialsFile(config.credentialsPath);
+            return json(PROFILE);
+        };
+        const browser = browserThatRedirects();
+        const result = await runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser }));
+
+        // At the moment the registry was asked, the old credential was still
+        // the one on disk. The new one only replaced it afterwards.
+        expect(onDiskWhenChecked).toBe(EXISTING_PAT);
+        expect(readCredentialsFile(config.credentialsPath)).toBe(FAKE_PAT);
+        expect(result.username).toBe("brigade-tester");
+    });
+
+    test("a token the registry won't confirm never touches a working credential", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, EXISTING_PAT);
+        const before = readFileSync(config.credentialsPath, "utf8");
+
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => json({ code: "E_UNAUTHORIZED", error: "that token means nothing to me" }, 401);
+
+        const error = await runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser })).then(
+            () => null,
+            (e: unknown) => e as AuthFlowError,
+        );
+
+        expect(error).toBeInstanceOf(AuthFlowError);
+        expect(error?.message).toContain("could not be verified");
+        // The user's next question is "did I just lose the credential I had?",
+        // so the message answers it.
+        expect(error?.message).toContain("untouched");
+
+        expect(readFileSync(config.credentialsPath, "utf8")).toBe(before);
+        expect(readCredentialsFile(config.credentialsPath)).toBe(EXISTING_PAT);
+        expect([...new Bun.Glob(".credentials.*.tmp").scanSync({ cwd: facetDir, dot: true })]).toEqual([]);
+    });
+
+    test("a token the registry won't confirm creates no credentials file either", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => json({ code: "E_UNAUTHORIZED" }, 401);
+
+        await expect(
+            runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser })),
+        ).rejects.toThrow(/could not be verified/);
         expect(existsSync(config.credentialsPath)).toBe(false);
     });
 
@@ -393,6 +595,109 @@ describe("secrets never reach the transcript", () => {
         expect(scrubSecrets("nothing to see")).toBe("nothing to see");
     });
 
+    test("scrubSecrets catches half a token as readily as a whole one", () => {
+        // Truncated by a log line, cut off by a field limit, split across a
+        // wrapped line — a fragment is still enough to be worth hiding, and
+        // the fragment is what usually escapes.
+        expect(scrubSecrets("prefix fct_pub_ABCDEFGHJKMN only")).toBe("prefix [redacted] only");
+        expect(scrubSecrets("bare fct_pub_ here")).toBe("bare [redacted] here");
+        expect(scrubSecrets(`header-only ${FAKE_JWT.split(".")[0] as string}`)).toBe("header-only [redacted]");
+        expect(scrubSecrets(`two parts ${FAKE_JWT.split(".").slice(0, 2).join(".")}`)).toBe("two parts [redacted]");
+    });
+
+    test("sanitizeUntrusted flattens, scrubs, and truncates whatever it is handed", () => {
+        expect(sanitizeUntrusted(`hi ${FAKE_PAT}`, 100)).toBe("hi [redacted]");
+        expect(sanitizeUntrusted("one\ntwo\r\nthree", 100)).toBe("one two three");
+        expect(sanitizeUntrusted("bell\u0007and\u0000nul", 100)).toBe("bell and nul");
+        expect(sanitizeUntrusted("x".repeat(50), 10)).toBe(`${"x".repeat(10)}…`);
+        expect(sanitizeUntrusted(42, 10)).toBe("");
+        expect(sanitizeUntrusted(undefined, 10)).toBe("");
+        // Scrubbing has to come first: truncating first would cut this token in
+        // half and leave a fragment the patterns no longer match.
+        expect(sanitizeUntrusted(`${FAKE_PAT} tail`, 20)).not.toContain("fct_pub_");
+    });
+
+    test("only a well-formed bearer token is allowed near a header", () => {
+        expect(isUsableBearerToken(FAKE_PAT)).toBe(true);
+        expect(isUsableBearerToken(FAKE_JWT)).toBe(true);
+        expect(isUsableBearerToken("")).toBe(false);
+        expect(isUsableBearerToken("oauth-secret\nInjected: yes")).toBe(false);
+        expect(isUsableBearerToken("has space")).toBe(false);
+        expect(isUsableBearerToken("tab\there")).toBe(false);
+        expect(isUsableBearerToken("nul\u0000byte")).toBe(false);
+        expect(isUsableBearerToken("a".repeat(8193))).toBe(false);
+    });
+
+    test("a token with a newline in it never reaches a header, or an error message", async () => {
+        // The payload passes the "is it a non-empty string" check, and then the
+        // header builder throws — quoting the whole value back in the message,
+        // which is how a secret ends up in a transcript.
+        const smuggled = "oauth-secret-value\nInjected: yes";
+        const handlers = happyHandlers();
+        handlers["/oauth2/token"] = () => json({ access_token: smuggled, token_type: "Bearer", expires_in: 3600 });
+        const browser = browserThatRedirects();
+        const fetcher = mockFetch(handlers);
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+        const error = await runBrowserLogin(config, ports({ fetch: fetcher.fn, openBrowser: browser.openBrowser })).then(
+            () => null,
+            (e: unknown) => e as AuthFlowError,
+        );
+
+        expect(error).toBeInstanceOf(AuthFlowError);
+        expect(error?.message).not.toContain("oauth-secret-value");
+        expect(error?.message).not.toContain("Injected: yes");
+        expect(error?.message).toContain("not a well-formed bearer token");
+        // Refused at the door: the mint request was never even attempted.
+        expect(fetcher.calls.map(call => new URL(call.url).pathname)).toEqual(["/oauth2/token"]);
+        expect(existsSync(config.credentialsPath)).toBe(false);
+    });
+
+    test("a stored credential that isn't a usable token is refused before it is sent", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        const fetcher = mockFetch(happyHandlers());
+
+        await expect(fetchIdentity(config, "bad\ntoken-with-a-newline", ports({ fetch: fetcher.fn }))).rejects.toThrow(
+            /not a well-formed token/,
+        );
+        expect(fetcher.calls).toEqual([]);
+    });
+
+    test("a hostile profile cannot smuggle a token into the identity we print", async () => {
+        // The registry is not assumed to be honest. Here it answers /auth/me
+        // with a username that is really a token, an email carrying a JWT on a
+        // forged second line, and a tier long enough to push everything else
+        // out of view.
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () =>
+            json({
+                username: FAKE_PAT,
+                email: `real@example.test\n  credential: ${FAKE_JWT}`,
+                tier: "x".repeat(500),
+                suspended: false,
+            });
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        const identity = await fetchIdentity(config, FAKE_PAT, ports({ fetch: mockFetch(handlers).fn }));
+        const everything = JSON.stringify(identity);
+
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain("eyJ");
+        expect(identity.username).toBe("[redacted]");
+        expect(identity.email).not.toContain("\n");
+        expect(identity.email).toContain("real@example.test");
+        expect(identity.tier.length).toBeLessThanOrEqual(33);
+    });
+
+    test("a profile whose username is nothing but a secret still gets a name", async () => {
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => json({ username: "   ", email: "", tier: "" });
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        const identity = await fetchIdentity(config, FAKE_PAT, ports({ fetch: mockFetch(handlers).fn }));
+
+        expect(identity.username).toBe("(unnamed account)");
+        expect(identity.tier).toBe("unknown");
+    });
+
     test("a registry error that echoes the JWT is redacted before it is shown", async () => {
         const browser = browserThatRedirects();
         const handlers = happyHandlers();
@@ -417,11 +722,11 @@ describe("the tools", () => {
         close: () => Promise<void>;
     }
 
-    async function connect(overrides: Partial<AuthPorts> = {}): Promise<Harness> {
+    async function connect(overrides: Partial<AuthPorts> = {}, capabilities: ClientCapabilities = UI_CAPABLE): Promise<Harness> {
         const server = createStudioServer({
             registerAll: (target, deps) => registerAuth(target, { ...deps, ...ports(overrides) }),
         });
-        const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities: UI_CAPABLE });
+        const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities });
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
         await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
         return {
@@ -450,6 +755,36 @@ describe("the tools", () => {
             }
             expect(byName.get("facet_login")?.annotations).toMatchObject({ destructiveHint: true, readOnlyHint: false });
             expect(byName.get("facet_whoami")?.annotations).toMatchObject({ readOnlyHint: true });
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a host that can't render UI is not pointed at a panel that was never published", async () => {
+        // The panel resource is only registered for UI-capable hosts, so a
+        // pointer handed to a text-only host names a resource that isn't there.
+        const harness = await connect({}, TEXT_ONLY);
+        try {
+            const { tools } = await harness.client.listTools();
+            expect(tools.map(tool => tool.name).sort()).toEqual(["facet_login", "facet_whoami"]);
+            for (const tool of tools) {
+                expect((tool._meta as { ui?: unknown } | undefined)?.ui).toBeUndefined();
+                expect(tool._meta?.["ui/resourceUri"]).toBeUndefined();
+            }
+            // Still fully usable, just without the view.
+            expect(tools.every(tool => (tool.description?.length ?? 0) > 0)).toBe(true);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a text-only host still gets a working facet_whoami", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, FAKE_PAT);
+        const harness = await connect({ fetch: mockFetch(happyHandlers()).fn }, TEXT_ONLY);
+        try {
+            const result = (await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult;
+            expect(textOf(result)).toContain("brigade-tester");
         } finally {
             await harness.close();
         }
@@ -536,6 +871,69 @@ describe("the tools", () => {
             await harness.close();
         }
     });
+
+    test("facet_whoami repeats nothing from a hostile profile", async () => {
+        // The whole hostile-registry story, end to end through the tool: the
+        // profile is a token, and none of it may appear in either half of what
+        // the host is handed.
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, FAKE_PAT);
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => json({ username: FAKE_PAT, email: "", tier: "free" });
+
+        const harness = await connect({ fetch: mockFetch(handlers).fn });
+        try {
+            const result = (await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult;
+            const everything = textOf(result) + JSON.stringify(result.structuredContent ?? {});
+
+            expect(everything).not.toContain("fct_pub_");
+            expect(everything).not.toContain(FAKE_PAT);
+            expect(everything).not.toContain("PQRSTUVWXYZ23456789");
+            expect(everything).toContain("tier: free");
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("facet_login repeats nothing from a hostile profile", async () => {
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => json({ username: `owner ${FAKE_PAT}`, email: `x@example.test ${FAKE_JWT}`, tier: "free" });
+
+        const harness = await connect({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser });
+        try {
+            const result = (await harness.client.callTool({ name: "facet_login" })) as CallToolResult;
+            const everything = textOf(result) + JSON.stringify(result.structuredContent ?? {});
+
+            expect(everything).not.toContain("fct_pub_");
+            expect(everything).not.toContain("eyJ");
+            expect(everything).not.toContain(FAKE_JWT);
+            expect(everything).toContain("owner [redacted]");
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a registry that never answers still lets the tool finish", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, FAKE_PAT);
+
+        // Accepts the request and then says nothing, forever. The only thing
+        // that can end this call is the deadline the request carries.
+        const neverAnswers = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+            await new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => reject((init.signal as AbortSignal).reason ?? new Error("aborted")));
+            })) as typeof globalThis.fetch;
+
+        const harness = await connect({ fetch: neverAnswers, requestTimeoutMs: 150 });
+        try {
+            const result = (await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult;
+            expect(result.isError).toBe(true);
+            expect(textOf(result)).toContain("did not answer within");
+        } finally {
+            await harness.close();
+        }
+    }, 15_000);
 
     test("facet_whoami prefers FACET_TOKEN, exactly as the CLI does", async () => {
         const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
