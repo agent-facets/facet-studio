@@ -60,7 +60,7 @@ facet adapter add codex
 facet add facet-studio
 ```
 
-Skills and commands materialize into `.agents/`, and agents into `.codex/agents/*.toml`.
+This materializes skills into `.agents/skills/` (scanned by Codex) and the custom `facet-author` agent into `.codex/agents/*.toml`. The eight facet-* command workflows are not invocable in Codex sessions today; an upstream adapter fix is tracked in the facets repo. To author and manage facets in Codex, use the `using-facets` and `authoring` skills plus the `facet-author` agent—this route is facet-CLI materialization into local directories, not a Codex-native plugin (Codex's plugin system uses `.codex-plugin/plugin.json`).
 
 ## Development
 
