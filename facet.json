@@ -4,10 +4,44 @@
   "description": "Author, publish, and install agent facets from your AI assistant. Skills, commands, and an agent that drive the facet CLI end to end.",
   "skills": {
     "using-facets": {
-      "description": "A Using Facets skill"
+      "description": "Load BEFORE any facet operation - creating, editing, building, publishing, adding, updating, or removing a facet, or answering how facets work. Ensures the facet CLI is installed and current, then routes the work through facet instructions."
+    },
+    "authoring": {
+      "description": "Guidelines for authoring quality facet assets - skills, agents, and commands: naming rules, manifest metadata, adapter config, and content conventions. Load when writing or reviewing facet asset content."
     }
   },
   "files": [
     "README.md"
-  ]
+  ],
+  "agents": {
+    "facet-author": {
+      "description": "Facet authoring specialist: owns end-to-end creation and revision of a facet - scaffolding, asset content, metadata, build, verify, and publish - driving the facet CLI headlessly."
+    }
+  },
+  "commands": {
+    "facet-create": {
+      "description": "Scaffold a new facet project headlessly with facet create."
+    },
+    "facet-modify": {
+      "description": "Edit a facet asset or its metadata headlessly with facet modify."
+    },
+    "facet-build": {
+      "description": "Validate the current facet and build the distributable archive."
+    },
+    "facet-publish": {
+      "description": "Publish the built facet to the registry, handling auth and version bumps."
+    },
+    "facet-add": {
+      "description": "Add one or more facets to this project and install them."
+    },
+    "facet-update": {
+      "description": "Update installed facets to newer versions."
+    },
+    "facet-remove": {
+      "description": "Remove facets from this project and uninstall their assets."
+    },
+    "facet-list": {
+      "description": "List the facets installed in this project."
+    }
+  }
 }

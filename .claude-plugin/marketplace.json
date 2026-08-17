@@ -1,0 +1,13 @@
+{
+  "name": "facet-studio",
+  "owner": { "name": "James Dunnam" },
+  "description": "Marketplace for the facet-studio plugin: author, publish, and install agent facets from your AI assistant.",
+  "plugins": [
+    {
+      "name": "facet-studio",
+      "source": "./plugin",
+      "description": "Author, publish, and install agent facets from your AI assistant.",
+      "category": "productivity"
+    }
+  ]
+}

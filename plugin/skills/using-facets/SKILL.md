@@ -1,3 +1,8 @@
+---
+name: using-facets
+description: "Load BEFORE any facet operation - creating, editing, building, publishing, adding, updating, or removing a facet, or answering how facets work. Ensures the facet CLI is installed and current, then routes the work through facet instructions."
+---
+
 # Using Facets
 
 Facets are portable bundles of skills, agents, and commands for AI coding tools.
