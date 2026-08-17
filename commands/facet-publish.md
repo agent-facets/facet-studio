@@ -1,57 +1,49 @@
-# Facet Publish
+Publish your facet to the registry. Published versions are immutable—once released, they cannot be modified or deleted.
 
-Publish your facet package to the registry. Published facets are immutable—once a version is released, it cannot be modified. Plan your changes carefully before publishing.
+## Authenticate to the registry
 
-## Task
+Verify your identity:
 
-Authenticate to the registry, confirm your identity, validate your build is current, and publish your facet package.
+```bash
+facet whoami
+```
 
-## Steps
+If authentication fails, choose one method to log in:
 
-1. **Verify your registry identity**
+- **Interactive (terminal):**
+  ```bash
+  facet login
+  ```
 
-   Check that you are authenticated and confirm your identity:
+- **CI/automation (environment variable):**
+  Set `FACET_TOKEN=fct_pub_…` with your registry publish token before running `facet publish`. This is the only method for non-interactive environments.
 
-   ```bash
-   facet whoami
-   ```
+## Confirm publishing is permanent
 
-   If authentication fails, log in with one of these methods:
+Publishing is permanent. Confirm that you intend to publish this version. Any changes after publishing require a version bump, rebuild, and republish. Never reuse a version that already exists in the registry.
 
-   - **Interactive login (TTY):**
-     ```bash
-     facet login
-     ```
+## Build a fresh artifact
 
-   - **CI/automation (set environment variable):**
-     Set `FACET_TOKEN=fct_pub_…` with your registry publish token before running `facet publish`.
+Always build immediately before publishing to prevent publish drift (where `dist/` is built from an older `facet.json`):
 
-2. **Confirm publishing (permanent action)**
+```bash
+facet build --json
+```
 
-   Published versions are immutable. Confirm with the user that they intend to publish this version. If changes are needed after publishing, you must bump the version, rebuild, and republish.
+## Publish to the registry
 
-3. **Build a fresh artifact**
+```bash
+facet publish
+```
 
-   Always build immediately before publishing to ensure `dist/` matches your current `facet.json`:
+## Handle version-exists errors
 
-   ```bash
-   facet build --json
-   ```
+If publish fails because the version already exists in the registry, bump the version and republish:
 
-4. **Publish to the registry**
+```bash
+facet modify facet --version <semver> --json
+facet build --json
+facet publish
+```
 
-   ```bash
-   facet publish
-   ```
-
-5. **Handle version conflicts**
-
-   If publish fails with a "version exists" error, the version is already in the registry. Bump your version and rebuild:
-
-   ```bash
-   facet modify facet --version <semver> --json
-   facet build --json
-   facet publish
-   ```
-
-   Replace `<semver>` with your new version (e.g., `1.0.1`).
+Replace `<semver>` with your new version (e.g., `1.0.1`).

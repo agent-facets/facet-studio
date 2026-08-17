@@ -1,33 +1,25 @@
-# Facet Build
+Validate your facet configuration and generate a distributable artifact.
 
-Build and validate a facet package. This command validates your facet configuration and generates a distributable artifact.
+## Validate configuration first
 
-## Task
+Run the validation check to catch errors before building:
 
-Validate your facet's configuration and create a build artifact (`.facet` file) in the `dist/` directory.
+```bash
+facet build --verify --json
+```
 
-## Steps
+If validation fails, review the errors, fix your `facet.json`, and re-run the validation until it passes.
 
-1. **Validate your facet configuration**
+## Build the artifact
 
-   Run the validation check first to catch configuration errors before building:
+Once validation succeeds, build the complete package:
 
-   ```bash
-   facet build --verify --json
-   ```
+```bash
+facet build --json
+```
 
-   Review the output for any errors. If validation fails, fix your `facet.json` configuration and re-run validation.
+This writes your facet to `dist/<name>-<version>.facet`, where `<name>` and `<version>` come from `facet.json`.
 
-2. **Build the facet artifact**
+## Verify the artifact
 
-   Once validation passes, build the complete facet package:
-
-   ```bash
-   facet build --json
-   ```
-
-   This writes your facet to `dist/<name>-<version>.facet`, where `<name>` and `<version>` come from your `facet.json`.
-
-3. **Locate your artifact**
-
-   The built facet file is ready to publish or distribute. Note its full path in `dist/`.
+Your built facet file is in `dist/` and ready to publish.
