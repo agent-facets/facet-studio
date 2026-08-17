@@ -75,11 +75,13 @@ for skill_path in .claude/skills/*/SKILL.md .agents/skills/*/SKILL.md; do
     echo "error: $skill_path missing frontmatter (should start with ---)" >&2
     exit 1
   fi
-  if ! grep -q "^name:" "$skill_path"; then
+  # Extract frontmatter block (lines between opening and closing ---)
+  frontmatter=$(awk 'NR==1 && /^---$/ {in_fm=1; next} in_fm && /^---$/ {exit} in_fm' "$skill_path")
+  if ! echo "$frontmatter" | grep -q "^name:"; then
     echo "error: $skill_path missing 'name:' in frontmatter" >&2
     exit 1
   fi
-  if ! grep -q "^description:" "$skill_path"; then
+  if ! echo "$frontmatter" | grep -q "^description:"; then
     echo "error: $skill_path missing 'description:' in frontmatter" >&2
     exit 1
   fi
