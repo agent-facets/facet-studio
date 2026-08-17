@@ -6,6 +6,8 @@ Install a facet into the current project from the registry, a git repository, or
 
 Add a facet by name, version, or source. The source can be a registry entry, a GitHub repository, or a local path within the project. Facet sources are validated before use to prevent shell injection.
 
+If the facet-studio MCP server is connected, run this operation through its `facet_add` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 ## Steps
 
 1. **Identify the facet source.** It can be:
