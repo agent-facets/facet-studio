@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Facet Studio</title>
+    <!--
+      Two markers below get filled in by buildPanelHtml() in panel.ts: the brand
+      token stylesheet and the view script. Nothing in this file may reference an
+      outside origin — the panel has to render with no network at all.
+    -->
+    <!--facet:tokens-->
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+
+      /*
+        The panel paints its own background instead of inheriting the host's, so
+        it stays legible whether the surrounding chrome is light or dark.
+      */
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 13px;
+        line-height: 1.5;
+        padding: 14px;
+      }
+
+      .panel {
+        display: block;
+      }
+
+      .waiting {
+        color: var(--ink-faint);
+        margin: 0;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+      }
+
+      .card-head {
+        border-bottom: 1px solid var(--line);
+        margin: 0 0 10px;
+        padding-bottom: 10px;
+      }
+
+      .operation {
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        margin: 0 0 2px;
+        text-transform: uppercase;
+      }
+
+      .facet {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 0;
+      }
+
+      .status {
+        align-items: center;
+        display: flex;
+        gap: 7px;
+        margin: 0;
+      }
+
+      .dot {
+        border-radius: 50%;
+        display: inline-block;
+        flex: none;
+        height: 8px;
+        width: 8px;
+      }
+
+      .status-text {
+        font-weight: 600;
+      }
+
+      .message {
+        color: var(--ink-dim);
+        margin: 8px 0 0;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+
+      .assets {
+        border-collapse: collapse;
+        margin-top: 12px;
+        width: 100%;
+      }
+
+      .assets caption {
+        color: var(--ink-faint);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        padding-bottom: 6px;
+        text-align: left;
+        text-transform: uppercase;
+      }
+
+      .assets th {
+        color: var(--ink-faint);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        text-align: left;
+      }
+
+      .assets th,
+      .assets td {
+        border-bottom: 1px solid var(--line);
+        padding: 5px 8px 5px 0;
+        vertical-align: top;
+      }
+
+      .assets tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .chip {
+        align-items: center;
+        color: var(--ink-dim);
+        display: inline-flex;
+        font-family: var(--mono);
+        font-size: 11px;
+        gap: 6px;
+      }
+
+      .asset-name {
+        font-family: var(--mono);
+        overflow-wrap: anywhere;
+      }
+
+      .asset-detail {
+        color: var(--ink-dim);
+        overflow-wrap: anywhere;
+      }
+
+      .empty {
+        color: var(--ink-faint);
+        margin: 10px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="facet-panel" class="panel" aria-live="polite">
+      <p class="waiting">Waiting for a Facet Studio result…</p>
+    </main>
+    <!--facet:view-script-->
+  </body>
+</html>
