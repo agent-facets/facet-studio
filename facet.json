@@ -1,0 +1,13 @@
+{
+  "name": "facet-studio",
+  "version": "0.1.0",
+  "description": "Author, publish, and install agent facets from your AI assistant. Skills, commands, and an agent that drive the facet CLI end to end.",
+  "skills": {
+    "using-facets": {
+      "description": "A Using Facets skill"
+    }
+  },
+  "files": [
+    "README.md"
+  ]
+}
