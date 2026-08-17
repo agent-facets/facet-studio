@@ -33,17 +33,17 @@ facet modify facet --private --json
 **Add or remove asset description:**
 
 ```bash
-facet modify skill|command '<name>' --add --description '<description>' --json
-facet modify skill|command '<name>' --remove --json
+facet modify skill|command|agent '<name>' --add --description '<description>' --json
+facet modify skill|command|agent '<name>' --remove --json
 ```
 
-**Rename skill or command:**
+**Rename skill, command, or agent:**
 
 ```bash
-facet modify skill|command '<old-name>' --rename '<new-name>' --json
+facet modify skill|command|agent '<old-name>' --rename '<new-name>' --json
 ```
 
-Print the JSON response. **Namespace reminder:** skills and commands share the same namespace — check that the new name doesn't collide with an existing skill or command.
+Print the JSON response. **Namespace reminder:** skills and commands share the same namespace — check that the new name doesn't collide with an existing skill or command. Agents have a separate namespace.
 
 ## Verify the build
 

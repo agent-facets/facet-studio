@@ -7,8 +7,11 @@ Scaffold a new facet with skills, agents, or commands.
 Prompt the user for:
 - **Facet name** (e.g., `my-facet` or `@myorg/my-facet`)
 - **Description** (e.g., `Does X with Y`)
-- **Assets** (at least one; comma-separated list of skill/agent/command names)
-- **Version** (optional; defaults to `0.1.0`)
+- **Skills** (optional; comma-separated names, or empty)
+- **Agents** (optional; comma-separated names, or empty)
+- **Commands** (optional; comma-separated names, or empty)
+- **Version** (optional; defaults to `0.0.0`)
+- **README** (optional; ask "Generate README.md?" — include `--no-readme` only if user says no)
 - **Privacy flag** (optional; `--private` if requested)
 
 ## Validate names
@@ -22,9 +25,15 @@ If any name fails, print the grammar rule and **stop**—do not proceed to the c
 
 ## Check assets
 
-If no skills, agents, or commands are listed, tell the user "no assets to scaffold" and **stop**.
+If the user provided no skills, agents, or commands (all empty), tell them "no assets to scaffold" and **stop**.
 
 ## Create the facet
+
+Build the command from the user's input:
+- If skills were provided, add `[--skill '<skill>']` for each
+- If agents were provided, add `[--agent '<agent>']` for each
+- If commands were provided, add `[--command '<command>']` for each
+- If the user said no to README, add `--no-readme`
 
 Run:
 
@@ -32,8 +41,8 @@ Run:
 facet create . --name '<name>' \
   --description '<description>' \
   [--version <version>] [--private] \
-  [--skill '<s>']... [--agent '<a>']... [--command '<c>']... \
-  --no-readme --json
+  [--skill '<skill>']... [--agent '<agent>']... [--command '<command>']... \
+  [--no-readme] --json
 ```
 
 Print the JSON response (the created facet tree and asset list). If the facet exists, the command exits 1; offer `--force` **only with explicit user consent** and remind them to review the existing facet.json.
