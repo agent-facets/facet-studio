@@ -16,7 +16,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { RegistrationDeps } from "./server.js";
@@ -150,6 +150,14 @@ const modifyArgs = z
     .refine(args => args.target === "facet" || (args.facetName === undefined && args.version === undefined && args.private === undefined), {
         error: "facetName / version / private are only valid when target is 'facet'",
         path: ["target"],
+    })
+    // The CLI's `--private` is a presence-only switch: it sets the flag, and there
+    // is no counterpart that clears it. So `private: false` has no honest
+    // translation, and the worst thing we could do is send `--private` anyway and
+    // hand the caller the exact opposite of what they asked for. We refuse instead.
+    .refine(args => args.private !== false, {
+        error: "the facet CLI can set the private flag but has no operation to clear it, so private cannot be false; edit facet.json directly to make a facet public again",
+        path: ["private"],
     });
 
 const addArgs = z.object({
@@ -292,14 +300,172 @@ function fail(code: ToolErrorCode, message: string, extra: Omit<ToolError, "code
     return { ok: false, error: { code, message, ...extra } };
 }
 
+/** One row of the panel's asset table. */
+export interface ToolAsset {
+    /** skill / agent / command, or `file` for anything we can't classify. */
+    type: string;
+    name: string;
+    detail?: string;
+}
+
 /**
- * Renders an outcome as tool content. This is the whole payload: a host with no
- * panel sees exactly what a host with one sees.
+ * The summary the panel draws its card from.
+ *
+ * These are the fields the view looks for, so the names have to match what it
+ * reads — see `toPanelData` in view/panel.ts. We spell the shape out here rather
+ * than importing the view's type, so the server never has to pull the browser
+ * half of the panel into its module graph.
  */
-export function renderOutcome(outcome: ToolOutcome): CallToolResult {
+export type ToolPresentation = {
+    facet: string;
+    operation: string;
+    status: "success" | "error";
+    message: string;
+    assets: ToolAsset[];
+};
+
+/** What the renderer needs to describe a run beyond the outcome itself. */
+export interface OutcomeContext {
+    /** Human label for the operation, e.g. "Verify facet". */
+    operation: string;
+    /** The resolved directory the run acted on — where we look for a manifest. */
+    directory: string;
+}
+
+/**
+ * Renders an outcome as tool content.
+ *
+ * Two views of one run. The text part is the whole payload and never changes
+ * shape, so a host with no panel still sees everything. Alongside it goes the
+ * summary the panel card is built from — same facts, arranged for a reader
+ * rather than a parser.
+ */
+export function renderOutcome(outcome: ToolOutcome, context: OutcomeContext): CallToolResult {
     return {
         content: [{ type: "text", text: JSON.stringify(outcome, null, 2) }],
+        structuredContent: summarize(outcome, context),
         ...(outcome.ok ? {} : { isError: true }),
+    };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A field of a record, but only when it is a string with something in it. */
+function stringField(source: Record<string, unknown>, key: string): string | undefined {
+    const value = source[key];
+    return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+/** Reads the facet manifest sitting in a directory, if there is a readable one. */
+function readManifest(directory: string): Record<string, unknown> | undefined {
+    try {
+        const parsed: unknown = JSON.parse(readFileSync(path.join(directory, "facet.json"), "utf8"));
+        return isRecord(parsed) ? parsed : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Which facet this run was about.
+ *
+ * The CLI names it in most `--json` payloads, but not all of them: `modify`
+ * reports only what changed, and the text commands report prose. So we fall back
+ * to the manifest on disk, and past that to the directory's own name. The card
+ * always gets something true to show.
+ */
+function facetNameFor(data: unknown, manifest: Record<string, unknown> | undefined, directory: string): string {
+    const fromCli = isRecord(data) ? stringField(data, "name") : undefined;
+    const fromManifest = manifest === undefined ? undefined : stringField(manifest, "name");
+    const base = path.basename(directory);
+    return fromCli ?? fromManifest ?? (base.length > 0 ? base : directory);
+}
+
+/** How the CLI lays its assets out on disk, so a file path can name its kind. */
+const ASSET_FILE_PATTERNS: readonly { pattern: RegExp; type: string }[] = [
+    { pattern: /^skills\/([^/]+)\/SKILL\.md$/, type: "skill" },
+    { pattern: /^agents\/([^/]+)\.md$/, type: "agent" },
+    { pattern: /^commands\/([^/]+)\.md$/, type: "command" },
+];
+
+/** Turns the file list a build or create reports into typed asset rows. */
+function assetsFromFiles(files: readonly string[]): ToolAsset[] {
+    return files.map(file => {
+        for (const { pattern, type } of ASSET_FILE_PATTERNS) {
+            const name = file.match(pattern)?.[1];
+            if (name !== undefined) {
+                return { type, name, detail: file };
+            }
+        }
+        return { type: "file", name: file };
+    });
+}
+
+/** The assets a manifest declares — what a facet holds, rather than what one run touched. */
+function assetsFromManifest(manifest: Record<string, unknown>): ToolAsset[] {
+    const groups = [
+        ["skills", "skill"],
+        ["agents", "agent"],
+        ["commands", "command"],
+    ] as const;
+
+    const rows: ToolAsset[] = [];
+    for (const [key, type] of groups) {
+        const group = manifest[key];
+        if (!isRecord(group)) {
+            continue;
+        }
+        for (const [name, entry] of Object.entries(group)) {
+            const detail = isRecord(entry) ? stringField(entry, "description") : undefined;
+            rows.push({ type, name, ...(detail === undefined ? {} : { detail }) });
+        }
+    }
+    return rows;
+}
+
+/** What the run produced: the files it reported, or failing that, what the facet holds. */
+function assetsFor(data: unknown, manifest: Record<string, unknown> | undefined): ToolAsset[] {
+    const files = isRecord(data) ? stringArray(data["files"]) : [];
+    if (files.length > 0) {
+        return assetsFromFiles(files);
+    }
+    return manifest === undefined ? [] : assetsFromManifest(manifest);
+}
+
+/** A line about how it went, in the CLI's own words wherever it gave us any. */
+function successMessage(data: unknown): string {
+    if (isRecord(data)) {
+        const changes = stringArray(data["changes"]);
+        if (changes.length > 0) {
+            return changes.join("; ");
+        }
+        const output = stringField(data, "output");
+        if (output !== undefined) {
+            return output;
+        }
+    }
+    return "Completed successfully.";
+}
+
+/** Boils one finished run down to the handful of fields the card draws. */
+function summarize(outcome: ToolOutcome, context: OutcomeContext): ToolPresentation {
+    const data = outcome.ok ? outcome.data : undefined;
+    const manifest = readManifest(context.directory);
+
+    return {
+        facet: facetNameFor(data, manifest, context.directory),
+        operation: context.operation,
+        status: outcome.ok ? "success" : "error",
+        // On the way out we hand over the CLI's own sentence, not a dump of the
+        // error object — the card has one line for this and it should read.
+        message: outcome.ok ? successMessage(data) : outcome.error.message,
+        assets: outcome.ok ? assetsFor(data, manifest) : [],
     };
 }
 
@@ -358,6 +524,17 @@ function firstLine(value: string): string {
 
 export type DirectoryResolution = { ok: true; path: string } | { ok: false; message: string };
 
+/** A path resolved as far as the filesystem allows, or the reason we gave up. */
+type PathLookup =
+    | {
+          ok: true;
+          /** Where the path ends up once every symlink that exists today is followed. */
+          full: string;
+          /** The deepest ancestor that exists right now, itself fully resolved. */
+          existing: string;
+      }
+    | { ok: false; reason: string };
+
 /**
  * Resolves a directory argument under the project root, refusing anything that
  * lands outside it.
@@ -366,31 +543,79 @@ export type DirectoryResolution = { ok: true; path: string } | { ok: false; mess
  * resolve the deepest part that does exist through its symlinks and rebuild the
  * rest on top. That way a symlinked subdirectory pointing at /etc is caught,
  * not just a literal `../..`.
+ *
+ * Two things get checked, not one. The obvious one is where the whole path ends
+ * up. The other is where its *existing* part ends up, because that part is the
+ * only place someone could drop a symlink to redirect us — and if the project
+ * root itself doesn't exist, the deepest thing that does exist sits above the
+ * root, which is exactly the swap we refuse to be set up for.
  */
 export function resolveDirectory(projectRoot: string, directory: string | undefined): DirectoryResolution {
-    const root = realpathish(path.resolve(projectRoot));
-    const target = realpathish(path.resolve(root, directory ?? "."));
-    if (target !== root && !target.startsWith(root + path.sep)) {
-        return { ok: false, message: `directory "${directory ?? "."}" resolves outside the project root` };
+    const rootLookup = lookUpPath(path.resolve(projectRoot));
+    if (!rootLookup.ok) {
+        return { ok: false, message: `the project root ${rootLookup.reason}` };
     }
-    return { ok: true, path: target };
+    const root = rootLookup.full;
+
+    const label = directory ?? ".";
+    const target = lookUpPath(path.resolve(root, label));
+    if (!target.ok) {
+        return { ok: false, message: `directory "${label}" ${target.reason}` };
+    }
+    if (!isInside(root, target.existing) || !isInside(root, target.full)) {
+        return { ok: false, message: `directory "${label}" resolves outside the project root` };
+    }
+    return { ok: true, path: target.full };
 }
 
-/** `realpath` for a path that may not exist yet: resolve what does, keep the rest. */
-function realpathish(target: string): string {
+/** True when `candidate` is the root itself or sits somewhere beneath it. */
+function isInside(root: string, candidate: string): boolean {
+    return candidate === root || candidate.startsWith(root + path.sep);
+}
+
+/**
+ * `realpath` for a path that may not exist yet: resolve what does, keep the rest.
+ *
+ * A segment is only allowed to be treated as "not there yet" when the OS really
+ * says it isn't there. If the lookup fails any other way — a permission wall, a
+ * symlink loop — or if the segment turns out to exist as a link we couldn't
+ * follow, we stop and say so. Quietly falling back to the literal path would
+ * mean approving a path without ever learning where it points.
+ */
+function lookUpPath(target: string): PathLookup {
     const missing: string[] = [];
     let current = target;
     for (;;) {
         try {
-            return path.join(realpathSync(current), ...missing.reverse());
-        } catch {
+            const existing = realpathSync(current);
+            return { ok: true, existing, full: path.join(existing, ...[...missing].reverse()) };
+        } catch (error) {
+            const code = (error as { code?: string }).code;
+            if (code !== "ENOENT" && code !== "ENOTDIR") {
+                return { ok: false, reason: `could not be resolved (${code ?? "unknown error"})` };
+            }
+            if (entryExists(current)) {
+                // Something is there, but `realpath` still couldn't say where it
+                // leads — a dangling or circular symlink. Never walk past it.
+                return { ok: false, reason: "contains a link that does not lead anywhere we can check" };
+            }
             const parent = path.dirname(current);
             if (parent === current) {
-                return target;
+                return { ok: false, reason: "has no existing ancestor to resolve it against" };
             }
             missing.push(path.basename(current));
             current = parent;
         }
+    }
+}
+
+/** Is there an entry at this path at all? Asked without following any link. */
+function entryExists(target: string): boolean {
+    try {
+        lstatSync(target);
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -528,7 +753,9 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
             ...(args.description === undefined ? [] : ["--description", args.description]),
             ...(args.facetName === undefined ? [] : ["--name", args.facetName]),
             ...(args.version === undefined ? [] : ["--version", args.version]),
-            ...(args.private === undefined ? [] : ["--private"]),
+            // Only `true` earns the flag. The schema already turns `false` away, and
+            // this second `=== true` is what makes sure it stays that way.
+            ...(args.private === true ? ["--private"] : []),
             "--json",
             dir,
         ],
@@ -587,30 +814,38 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
 
 /** Runs one tool end to end: validate, resolve the directory, spawn, interpret. */
 export async function runTool(spec: ToolSpec, rawArgs: unknown, context: { projectRoot: string; runCli: RunCli }): Promise<CallToolResult> {
+    // Commands that take the directory as an argument still run at the root, so
+    // both branches end up with a path that went through the containment check.
+    const root = resolveDirectory(context.projectRoot, ".");
+    const rootPath = root.ok ? root.path : path.resolve(context.projectRoot);
+
+    // Every exit below goes through here, so no result can leave without the
+    // summary the panel needs. Before a directory argument has been checked, the
+    // root stands in for it — that's the only directory we know is safe to read.
+    const render = (outcome: ToolOutcome, directory: string = rootPath): CallToolResult =>
+        renderOutcome(outcome, { operation: spec.title, directory });
+
     const parsed = spec.schema.safeParse(rawArgs ?? {});
     if (!parsed.success) {
-        return renderOutcome(fail("invalid_input", describeIssues(parsed.error)));
+        return render(fail("invalid_input", describeIssues(parsed.error)));
     }
 
     const args = parsed.data as { directory?: string };
     const directory = resolveDirectory(context.projectRoot, args.directory);
     if (!directory.ok) {
-        return renderOutcome(fail("invalid_input", directory.message));
+        return render(fail("invalid_input", directory.message));
     }
 
     const argv = spec.argv(parsed.data as never, directory.path);
     const offending = argv.find(part => CONTROL_CHARS.test(part));
     if (offending !== undefined) {
         // Belt and braces: nothing validated above can reach here.
-        return renderOutcome(fail("invalid_input", "arguments must not contain control characters"));
+        return render(fail("invalid_input", "arguments must not contain control characters"), directory.path);
     }
 
-    // Commands that take the directory as an argument still run at the root, so
-    // both branches end up with a path that went through the containment check.
-    const root = resolveDirectory(context.projectRoot, ".");
-    const cwd = spec.directoryMode === "cwd" ? directory.path : root.ok ? root.path : path.resolve(context.projectRoot);
+    const cwd = spec.directoryMode === "cwd" ? directory.path : rootPath;
     const result = await context.runCli({ argv, cwd });
-    return renderOutcome(interpret(result, spec.output));
+    return render(interpret(result, spec.output), directory.path);
 }
 
 function describeIssues(error: z.ZodError): string {
