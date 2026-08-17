@@ -8,7 +8,7 @@ A facet is a reusable bundle of knowledge, persona, and workflows. Each asset—
 |-------|-----------|-----------------|
 | **Skill** | Passive knowledge an assistant applies to its reasoning. Model reads it when solving a task that matches the trigger description. | "when the user asks about CLI syntax" |
 | **Agent** | Persona with a specific role and tool posture. Activates as a subprocess, constrained to its declared behavior. | Multi-step workflow tool; conversational assistant in a narrow domain |
-| **Command** | User-invoked workflow. CLIs, shortcuts, automation pipelines that run when named. | `facet run fetch-schema --project myapp` |
+| **Command** | User-invoked workflow. CLIs, shortcuts, automation pipelines that run when named. | "when the user runs a specific workflow" |
 
 ## Naming Rules
 
