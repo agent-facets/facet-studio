@@ -1,8 +1,16 @@
 {
   "name": "facet-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Author, publish, and install agent facets from your AI assistant. Skills, commands, and an agent that drive the facet CLI end to end.",
   "author": {
     "name": "James Dunnam"
+  },
+  "mcpServers": {
+    "facet-studio": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"
+      ]
+    }
   }
 }

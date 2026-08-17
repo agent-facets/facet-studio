@@ -6,6 +6,8 @@ description: "Validate the current facet and build the distributable archive."
 
 Validate your facet configuration and generate a distributable artifact.
 
+If the facet-studio MCP server is connected, run this operation through its `facet_build` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 ## Validate configuration first
 
 Run the validation check to catch errors before building:

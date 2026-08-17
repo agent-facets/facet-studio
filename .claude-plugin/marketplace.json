@@ -6,7 +6,7 @@
     {
       "name": "facet-studio",
       "source": "./plugin",
-      "description": "Author, publish, and install agent facets from your AI assistant.",
+      "description": "Author, publish, and install agent facets from your AI assistant — with branded panels and registry sign-in via the bundled MCP server.",
       "category": "productivity"
     }
   ]
