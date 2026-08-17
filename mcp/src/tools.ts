@@ -1,4 +1,4 @@
-// The eight lifecycle tools facet-studio exposes: thin, headless wrappers around
+// The nine lifecycle tools facet-studio exposes: thin, headless wrappers around
 // the `facet` CLI.
 //
 // Everything here obeys one rule above all others: a user-supplied value is
@@ -160,7 +160,18 @@ const addArgs = z.object({
     directory: directoryField,
 });
 
+// Moving a facet to a new version needs both halves of the coordinate, so unlike
+// `facet_add` neither field is optional here: "update" with no version would just
+// be an add, and "update" with no name would be an install.
 const updateArgs = z.object({
+    name: facetNameSchema.describe("Installed facet to move, by registry name."),
+    version: versionSchema.describe("Version or range to move it to."),
+    verbose: verboseField,
+    acceptMcp: acceptMcpField,
+    directory: directoryField,
+});
+
+const installArgs = z.object({
     frozenLockfile: z.boolean().optional().describe("Treat facets.lock as the source of truth and fail on drift."),
     verbose: verboseField,
     acceptMcp: acceptMcpField,
@@ -429,7 +440,7 @@ const READ_ONLY: ToolAnnotations = { readOnlyHint: true, destructiveHint: false,
 const MUTATES: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
 const MUTATES_ONLINE: ToolAnnotations = { ...MUTATES, openWorldHint: true };
 
-/** `--verbose` / `--accept-mcp`, shared by add / update / remove. */
+/** `--verbose` / `--accept-mcp`, shared by add / update / install / remove. */
 function projectFlags(args: { verbose?: boolean; acceptMcp?: boolean }): string[] {
     return [...(args.verbose === true ? ["--verbose"] : []), ...(args.acceptMcp === true ? ["--accept-mcp"] : [])];
 }
@@ -533,12 +544,25 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
         directoryMode: "cwd",
         argv: args => ["add", args.version === undefined ? args.name : `${args.name}@${args.version}`, ...projectFlags(args)],
     }),
+    // The CLI has no `update` subcommand: the documented way to move a facet to a
+    // new version is `facet add '<name>@<new-version>'`, which is what this runs.
     defineTool({
         name: "facet_update",
-        title: "Update installed facets",
-        description: "Reinstall every facet declared in facets.json, bringing the project back in step with its manifest.",
+        title: "Update facet",
+        description: "Move an installed facet to a specific version, updating facets.json and reinstalling it.",
         schema: updateArgs,
         shape: updateArgs.shape,
+        annotations: MUTATES_ONLINE,
+        output: "text",
+        directoryMode: "cwd",
+        argv: args => ["add", `${args.name}@${args.version}`, ...projectFlags(args)],
+    }),
+    defineTool({
+        name: "facet_install",
+        title: "Install facets",
+        description: "Restore a project from its lockfile, installing every facet facets.json declares at the versions already resolved.",
+        schema: installArgs,
+        shape: installArgs.shape,
         annotations: MUTATES_ONLINE,
         output: "text",
         directoryMode: "cwd",
@@ -599,7 +623,7 @@ function describeIssues(error: z.ZodError): string {
 }
 
 /**
- * Registers all eight tools.
+ * Registers all nine tools.
  *
  * A host that negotiated the UI extension gets App tools carrying the panel's
  * resource URI; a host that didn't gets the same tools without the UI metadata,

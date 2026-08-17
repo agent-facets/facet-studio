@@ -28,7 +28,7 @@ import {
 const UI_CAPABLE: ClientCapabilities = { extensions: { [EXTENSION_ID]: {} } };
 const TEXT_ONLY: ClientCapabilities = {};
 
-const TOOL_NAMES = ["facet_list", "facet_verify", "facet_build", "facet_create", "facet_modify", "facet_add", "facet_update", "facet_remove"];
+const TOOL_NAMES = ["facet_list", "facet_verify", "facet_build", "facet_create", "facet_modify", "facet_add", "facet_update", "facet_install", "facet_remove"];
 
 /** Temp directories this file made, cleaned up at the end of the run. */
 const scratchDirs: string[] = [];
@@ -222,7 +222,7 @@ describe("directory containment", () => {
 });
 
 describe("registration", () => {
-    test("registers all eight tools, in order", async () => {
+    test("registers all nine tools, in order", async () => {
         const harness = await connect();
         try {
             const listed = await harness.client.listTools();
@@ -241,12 +241,13 @@ describe("registration", () => {
             for (const name of ["facet_list", "facet_verify"]) {
                 expect(byName.get(name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
             }
-            for (const name of ["facet_build", "facet_create", "facet_modify", "facet_add", "facet_update", "facet_remove"]) {
+            for (const name of ["facet_build", "facet_create", "facet_modify", "facet_add", "facet_update", "facet_install", "facet_remove"]) {
                 expect(byName.get(name)?.annotations).toMatchObject({ destructiveHint: true, readOnlyHint: false });
             }
-            // Only the two tools that talk to the registry are open-world.
+            // Only the three tools that talk to the registry are open-world.
             expect(byName.get("facet_add")?.annotations?.openWorldHint).toBe(true);
             expect(byName.get("facet_update")?.annotations?.openWorldHint).toBe(true);
+            expect(byName.get("facet_install")?.annotations?.openWorldHint).toBe(true);
             expect(byName.get("facet_build")?.annotations?.openWorldHint).toBe(false);
         } finally {
             await harness.close();
@@ -257,7 +258,7 @@ describe("registration", () => {
         const harness = await connect({ capabilities: UI_CAPABLE });
         try {
             const listed = await harness.client.listTools();
-            expect(listed.tools).toHaveLength(8);
+            expect(listed.tools).toHaveLength(TOOL_NAMES.length);
             for (const tool of listed.tools) {
                 expect((tool._meta as { ui?: { resourceUri?: string } } | undefined)?.ui?.resourceUri).toBe(PANEL_RESOURCE_URI);
             }
@@ -401,10 +402,23 @@ describe("argv construction", () => {
         expect((await argvFor("facet_add", { name: "thing", verbose: true, acceptMcp: true }, root)).argv).toEqual(["add", "thing", "--verbose", "--accept-mcp"]);
     });
 
-    test("facet_update reinstalls from the manifest", async () => {
+    test("facet_update moves one facet to one version, as a single argv element", async () => {
         const root = scratch();
-        expect((await argvFor("facet_update", {}, root)).argv).toEqual(["install"]);
-        expect((await argvFor("facet_update", { frozenLockfile: true, verbose: true }, root)).argv).toEqual(["install", "--frozen-lockfile", "--verbose"]);
+        // The CLI has no `update` subcommand; `add name@version` is the documented move.
+        expect((await argvFor("facet_update", { name: "my-facet", version: "2.0.0" }, root)).argv).toEqual(["add", "my-facet@2.0.0"]);
+        expect((await argvFor("facet_update", { name: "@scope/thing", version: "2.*", verbose: true, acceptMcp: true }, root)).argv).toEqual([
+            "add",
+            "@scope/thing@2.*",
+            "--verbose",
+            "--accept-mcp",
+        ]);
+    });
+
+    test("facet_install restores the project from its lockfile", async () => {
+        const root = scratch();
+        expect((await argvFor("facet_install", {}, root)).argv).toEqual(["install"]);
+        expect((await argvFor("facet_install", { frozenLockfile: true, verbose: true }, root)).argv).toEqual(["install", "--frozen-lockfile", "--verbose"]);
+        expect((await argvFor("facet_install", { acceptMcp: true }, root)).argv).toEqual(["install", "--accept-mcp"]);
     });
 
     test("facet_remove names exactly one facet", async () => {
@@ -439,6 +453,26 @@ describe("hostile calls never reach the CLI", () => {
         const harness = await connect();
         try {
             await expectSchemaRefusal(harness, "facet_remove", { name: "--force" });
+        } finally {
+            await harness.close();
+        }
+    });
+
+    for (const version of ["--force", "; rm -rf ~", "v2", "$(id)", "2.0.0 --accept-mcp"]) {
+        test(`facet_update refuses the version ${JSON.stringify(version)}`, async () => {
+            const harness = await connect();
+            try {
+                await expectSchemaRefusal(harness, "facet_update", { name: "my-facet", version });
+            } finally {
+                await harness.close();
+            }
+        });
+    }
+
+    test("facet_update refuses a move with no version to move to", async () => {
+        const harness = await connect();
+        try {
+            await expectSchemaRefusal(harness, "facet_update", { name: "my-facet" });
         } finally {
             await harness.close();
         }
