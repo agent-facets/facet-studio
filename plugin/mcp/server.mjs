@@ -30601,7 +30601,9 @@ var REQUEST_TIMEOUT_MS = 30000;
 var TOKEN_NAME = "facet-studio";
 var TOKEN_SCOPES = ["publish:*"];
 var TOKEN_EXPIRES_IN_DAYS = 90;
-var PAT_SHAPE = /^fct_pub_[A-Za-z0-9]+\.[A-Za-z0-9]+$/;
+var PAT_MARKER = "fct_pub_";
+var PAT_MIN_PREFIX = 4;
+var PAT_MIN_SECRET = 4;
 
 class AuthFlowError extends Error {
   name = "AuthFlowError";
@@ -30639,17 +30641,103 @@ function trimToUndefined(value) {
 function stripTrailingSlashes(value) {
   return value.replace(/\/+$/, "");
 }
-var PAT_ANYWHERE = /fct_pub_[A-Za-z0-9]*(?:\.[A-Za-z0-9]*)?/g;
-var JWT_ANYWHERE = /eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*){0,2}/g;
+var REDACTED = "[redacted]";
+var JWT_MARKER = "eyJ";
+var JWT_MIN_HEADER = 8;
+var DOT = 46;
+function isPatChar(code) {
+  return code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122;
+}
+function isJwtChar(code) {
+  return isPatChar(code) || code === 45 || code === 95;
+}
+function runEnd(text, from, member) {
+  let at = from;
+  while (at < text.length && member(text.charCodeAt(at)))
+    at += 1;
+  return at;
+}
+var NO_CREDENTIAL = -1;
+function noCredential(start, readTo, marker) {
+  return { end: NO_CREDENTIAL, resume: Math.max(start + 1, readTo - marker.length + 1) };
+}
+function readPat(text, start) {
+  const prefixFrom = start + PAT_MARKER.length;
+  const prefixTo = runEnd(text, prefixFrom, isPatChar);
+  if (prefixTo - prefixFrom < PAT_MIN_PREFIX || text.charCodeAt(prefixTo) !== DOT) {
+    return noCredential(start, prefixTo, PAT_MARKER);
+  }
+  const secretFrom = prefixTo + 1;
+  const secretTo = runEnd(text, secretFrom, isPatChar);
+  if (secretTo - secretFrom < PAT_MIN_SECRET)
+    return noCredential(start, secretTo, PAT_MARKER);
+  return { end: secretTo, resume: secretTo };
+}
+function readJwt(text, start) {
+  const headerFrom = start + JWT_MARKER.length;
+  const headerTo = runEnd(text, headerFrom, isJwtChar);
+  if (headerTo - headerFrom < JWT_MIN_HEADER || text.charCodeAt(headerTo) !== DOT) {
+    return noCredential(start, headerTo, JWT_MARKER);
+  }
+  const claimsFrom = headerTo + 1;
+  const claimsTo = runEnd(text, claimsFrom, isJwtChar);
+  if (claimsTo === claimsFrom)
+    return noCredential(start, claimsTo, JWT_MARKER);
+  if (text.charCodeAt(claimsTo) !== DOT)
+    return { end: claimsTo, resume: claimsTo };
+  const signatureTo = runEnd(text, claimsTo + 1, isJwtChar);
+  return { end: signatureTo, resume: signatureTo };
+}
+function isTokenShaped(value) {
+  return value.startsWith(PAT_MARKER) && readPat(value, 0).end === value.length;
+}
+function findMarker(text, marker, from, anyCase) {
+  if (!anyCase)
+    return text.indexOf(marker, from);
+  for (let at = from;at + marker.length <= text.length; at += 1) {
+    let same = true;
+    for (let step = 0;step < marker.length; step += 1) {
+      if (lowerAscii(text.charCodeAt(at + step)) !== lowerAscii(marker.charCodeAt(step))) {
+        same = false;
+        break;
+      }
+    }
+    if (same)
+      return at;
+  }
+  return -1;
+}
+function lowerAscii(code) {
+  return code >= 65 && code <= 90 ? code + 32 : code;
+}
+function redactAll(text, marker, read, anyCase = false) {
+  let out = "";
+  let kept = 0;
+  let from = 0;
+  for (;; ) {
+    const start = findMarker(text, marker, from, anyCase);
+    if (start < 0)
+      break;
+    const { end, resume } = read(text, start);
+    if (end === NO_CREDENTIAL) {
+      from = resume;
+      continue;
+    }
+    out += text.slice(kept, start) + REDACTED;
+    kept = end;
+    from = end;
+  }
+  return out.length === 0 ? text : out + text.slice(kept);
+}
 var CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
 function scrubSecrets(text, known = []) {
   let out = text;
   for (const secret of known) {
     if (secret !== undefined && secret.length >= 8) {
-      out = out.split(secret).join("[redacted]");
+      out = out.split(secret).join(REDACTED);
     }
   }
-  return out.replace(PAT_ANYWHERE, "[redacted]").replace(JWT_ANYWHERE, "[redacted]");
+  return redactAll(redactAll(out, PAT_MARKER, readPat), JWT_MARKER, readJwt);
 }
 function sanitizeUntrusted(value, limit) {
   if (typeof value !== "string")
@@ -30660,6 +30748,23 @@ function sanitizeUntrusted(value, limit) {
 function isUsableBearerToken(value) {
   return value.length > 0 && value.length <= 8192 && /^[\x21-\x7e]+$/.test(value);
 }
+var MAX_BODY_SCAN = 64 * 1024;
+var BODY_SHOWN = 200;
+var BODY_TRUNCATED = "(rest of body omitted)";
+function capUntrustedBody(raw) {
+  if (raw.length <= MAX_BODY_SCAN)
+    return raw;
+  const window2 = raw.slice(0, MAX_BODY_SCAN);
+  if (!isBodyTokenChar(raw.charCodeAt(MAX_BODY_SCAN)))
+    return window2;
+  let at = window2.length;
+  while (at > 0 && isBodyTokenChar(window2.charCodeAt(at - 1)))
+    at -= 1;
+  return at === window2.length ? window2 : `${window2.slice(0, at)}${REDACTED}`;
+}
+function isBodyTokenChar(code) {
+  return isJwtChar(code) || code === DOT;
+}
 async function describeBody(response, known) {
   let raw;
   try {
@@ -30667,10 +30772,12 @@ async function describeBody(response, known) {
   } catch {
     return "(no readable body)";
   }
-  const clean = scrubSecrets(raw, known).replace(/\s+/g, " ").trim();
+  const cut = raw.length > MAX_BODY_SCAN;
+  const clean = scrubSecrets(capUntrustedBody(raw), known).replace(/\s+/g, " ").trim();
   if (clean.length === 0)
-    return "(empty body)";
-  return clean.length > 200 ? `${clean.slice(0, 200)}…` : clean;
+    return cut ? `(nothing to read at the front of the body) ${BODY_TRUNCATED}` : "(empty body)";
+  const shown = clean.length > BODY_SHOWN ? `${clean.slice(0, BODY_SHOWN)}…` : clean;
+  return cut ? `${shown} ${BODY_TRUNCATED}` : shown;
 }
 function createPkce(random = randomBytes) {
   const verifier = base64url3(random(64));
@@ -30879,7 +30986,7 @@ async function mintPat(config2, jwt2, ports) {
   }
   const payload = await response.json();
   const token = payload.plaintext_token;
-  if (typeof token !== "string" || !PAT_SHAPE.test(token)) {
+  if (typeof token !== "string" || !isTokenShaped(token)) {
     throw new AuthFlowError("the registry returned a token in a shape this server doesn't recognise");
   }
   return token;
@@ -31069,6 +31176,29 @@ function notSignedInMessage(config2) {
   return ["facet studio · not signed in", "", "No registry credential found.", "", fallbackMessage(config2)].join(`
 `);
 }
+var LOGIN_OPERATION = "Sign in to the registry";
+var WHOAMI_OPERATION = "Registry identity";
+var UNNAMED_REGISTRY = "facet registry";
+function redactJwtsAnyCase(text) {
+  return redactAll(text, JWT_MARKER, readJwt, true);
+}
+function registryLabel(registryUrl) {
+  try {
+    const { host } = new URL(registryUrl);
+    if (host.length > 0) {
+      return redactJwtsAnyCase(host);
+    }
+  } catch {}
+  const raw = registryUrl.trim();
+  return raw.length > 0 ? raw : UNNAMED_REGISTRY;
+}
+function cardSubject(config2, username) {
+  const named = username?.trim() ?? "";
+  return named.length > 0 ? named : registryLabel(config2.registryUrl);
+}
+function card(operation, subject, status, message) {
+  return { facet: subject, operation, status, message, assets: [] };
+}
 function resolvePorts(deps) {
   const env = deps.env ?? process.env;
   return {
@@ -31091,11 +31221,21 @@ function text(body, structured, isError = false) {
 var SCRUB_MAX_DEPTH = 8;
 var SCRUB_MAX_NODES = 5000;
 var SCRUB_OMITTED = "[omitted]";
+var SCRUB_TRUNCATED = `${SCRUB_OMITTED} (truncated)`;
 function scrubStructured(structured) {
   const budget = { nodes: SCRUB_MAX_NODES };
+  return scrubEntries(structured, SCRUB_MAX_DEPTH, budget, new Set);
+}
+function scrubEntries(source, depth, budget, onPath) {
   const out = {};
-  for (const [key, value] of Object.entries(structured)) {
-    out[scrubSecrets(key)] = scrubValue(value, SCRUB_MAX_DEPTH, budget, new Set);
+  for (const key in source) {
+    if (!Object.hasOwn(source, key))
+      continue;
+    if (budget.nodes <= 0) {
+      out[SCRUB_TRUNCATED] = SCRUB_TRUNCATED;
+      break;
+    }
+    out[scrubSecrets(key)] = scrubValue(source[key], depth, budget, onPath);
   }
   return out;
 }
@@ -31112,13 +31252,17 @@ function scrubValue(value, depth, budget, onPath) {
   onPath.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item) => scrubValue(item, depth - 1, budget, onPath));
+      const out = [];
+      for (const item of value) {
+        if (budget.nodes <= 0) {
+          out.push(SCRUB_TRUNCATED);
+          break;
+        }
+        out.push(scrubValue(item, depth - 1, budget, onPath));
+      }
+      return out;
     }
-    const out = {};
-    for (const [key, item] of Object.entries(value)) {
-      out[scrubSecrets(key)] = scrubValue(item, depth - 1, budget, onPath);
-    }
-    return out;
+    return scrubEntries(value, depth - 1, budget, onPath);
   } finally {
     onPath.delete(value);
   }
@@ -31140,22 +31284,37 @@ function registerAuth(server, deps) {
   }, async () => {
     const config2 = readAuthConfig(ports.env, ports.home);
     if (!config2.browserFlowAvailable) {
-      return text(fallbackMessage(config2), { signedIn: false, mode: "fallback", registryUrl: config2.registryUrl });
+      const body = fallbackMessage(config2);
+      return text(body, {
+        signedIn: false,
+        mode: "fallback",
+        registryUrl: config2.registryUrl,
+        ...card(LOGIN_OPERATION, cardSubject(config2), "success", body)
+      });
     }
     try {
       const success2 = await runBrowserLogin(config2, ports);
-      return text(signedInMessage(success2), {
+      const body = signedInMessage(success2);
+      return text(body, {
         signedIn: true,
         mode: "browser",
         username: success2.username,
         email: success2.email,
         tier: success2.tier,
         suspended: success2.suspended,
-        registryUrl: config2.registryUrl
+        registryUrl: config2.registryUrl,
+        ...card(LOGIN_OPERATION, cardSubject(config2, success2.username), "success", body)
       });
     } catch (error51) {
       const reason = scrubSecrets(messageOf(error51));
-      return text(fallbackMessage(config2, reason), { signedIn: false, mode: "fallback", reason, registryUrl: config2.registryUrl }, true);
+      const body = fallbackMessage(config2, reason);
+      return text(body, {
+        signedIn: false,
+        mode: "fallback",
+        reason,
+        registryUrl: config2.registryUrl,
+        ...card(LOGIN_OPERATION, cardSubject(config2), "error", body)
+      }, true);
     }
   });
   publish("facet_whoami", {
@@ -31166,7 +31325,13 @@ function registerAuth(server, deps) {
     const config2 = readAuthConfig(ports.env, ports.home);
     const credential = resolveCredential(config2);
     if (credential.kind === "absent") {
-      return text(notSignedInMessage(config2), { signedIn: false, mode: "fallback", registryUrl: config2.registryUrl });
+      const body = notSignedInMessage(config2);
+      return text(body, {
+        signedIn: false,
+        mode: "fallback",
+        registryUrl: config2.registryUrl,
+        ...card(WHOAMI_OPERATION, cardSubject(config2), "success", body)
+      });
     }
     const where = credential.kind === "env" ? "FACET_TOKEN (environment)" : config2.credentialsPath;
     try {
@@ -31186,19 +31351,34 @@ function registerAuth(server, deps) {
         email: identity.email,
         tier: identity.tier,
         suspended: identity.suspended,
-        registryUrl: config2.registryUrl
+        registryUrl: config2.registryUrl,
+        ...card(WHOAMI_OPERATION, cardSubject(config2, identity.username), "success", body)
       });
     } catch (error51) {
       const reason = scrubSecrets(messageOf(error51), [credential.token]);
-      return text([`facet studio · couldn't check the saved credential`, "", `  credential: ${where}`, `  problem: ${reason}`, "", fallbackMessage(config2)].join(`
-`), { signedIn: false, mode: credential.kind, reason, registryUrl: config2.registryUrl }, true);
+      const body = [
+        `facet studio · couldn't check the saved credential`,
+        "",
+        `  credential: ${where}`,
+        `  problem: ${reason}`,
+        "",
+        fallbackMessage(config2)
+      ].join(`
+`);
+      return text(body, {
+        signedIn: false,
+        mode: credential.kind,
+        reason,
+        registryUrl: config2.registryUrl,
+        ...card(WHOAMI_OPERATION, cardSubject(config2), "error", body)
+      }, true);
     }
   });
 }
 
 // mcp/src/tools.ts
 import { execFile } from "node:child_process";
-import { lstatSync, readFileSync as readFileSync2, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 var PANEL_RESOURCE_URI2 = "ui://facet-studio/panel.html";
 var DEFAULT_TIMEOUT_MS = 120000;
@@ -31329,10 +31509,13 @@ function fail(code, message, extra = {}) {
 }
 function renderOutcome(outcome, context) {
   return {
-    content: [{ type: "text", text: JSON.stringify(outcome, null, 2) }],
+    content: [{ type: "text", text: scrubSecrets(JSON.stringify(outcome, null, 2)) }],
     structuredContent: summarize(outcome, context),
     ...outcome.ok ? {} : { isError: true }
   };
+}
+function clean(value) {
+  return scrubSecrets(value);
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -31344,61 +31527,27 @@ function stringField(source, key) {
 function stringArray(value) {
   return Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : [];
 }
-function readManifest(directory) {
-  try {
-    const parsed = JSON.parse(readFileSync2(path.join(directory, "facet.json"), "utf8"));
-    return isRecord(parsed) ? parsed : undefined;
-  } catch {
-    return;
-  }
-}
-function facetNameFor(data, manifest, directory) {
+function facetNameFor(data, directory) {
   const fromCli = isRecord(data) ? stringField(data, "name") : undefined;
-  const fromManifest = manifest === undefined ? undefined : stringField(manifest, "name");
   const base = path.basename(directory);
-  return fromCli ?? fromManifest ?? (base.length > 0 ? base : directory);
+  return fromCli ?? (base.length > 0 ? base : directory);
 }
 var ASSET_FILE_PATTERNS = [
   { pattern: /^skills\/([^/]+)\/SKILL\.md$/, type: "skill" },
   { pattern: /^agents\/([^/]+)\.md$/, type: "agent" },
   { pattern: /^commands\/([^/]+)\.md$/, type: "command" }
 ];
-function assetsFromFiles(files) {
+function assetsFor(data) {
+  const files = isRecord(data) ? stringArray(data["files"]) : [];
   return files.map((file2) => {
     for (const { pattern, type } of ASSET_FILE_PATTERNS) {
       const name = file2.match(pattern)?.[1];
       if (name !== undefined) {
-        return { type, name, detail: file2 };
+        return { type, name: clean(name), detail: clean(file2) };
       }
     }
-    return { type: "file", name: file2 };
+    return { type: "file", name: clean(file2) };
   });
-}
-function assetsFromManifest(manifest) {
-  const groups = [
-    ["skills", "skill"],
-    ["agents", "agent"],
-    ["commands", "command"]
-  ];
-  const rows = [];
-  for (const [key, type] of groups) {
-    const group = manifest[key];
-    if (!isRecord(group)) {
-      continue;
-    }
-    for (const [name, entry] of Object.entries(group)) {
-      const detail = isRecord(entry) ? stringField(entry, "description") : undefined;
-      rows.push({ type, name, ...detail === undefined ? {} : { detail } });
-    }
-  }
-  return rows;
-}
-function assetsFor(data, manifest) {
-  const files = isRecord(data) ? stringArray(data["files"]) : [];
-  if (files.length > 0) {
-    return assetsFromFiles(files);
-  }
-  return manifest === undefined ? [] : assetsFromManifest(manifest);
 }
 function successMessage(data) {
   if (isRecord(data)) {
@@ -31415,13 +31564,12 @@ function successMessage(data) {
 }
 function summarize(outcome, context) {
   const data = outcome.ok ? outcome.data : undefined;
-  const manifest = readManifest(context.directory);
   return {
-    facet: facetNameFor(data, manifest, context.directory),
-    operation: context.operation,
+    facet: clean(facetNameFor(data, context.directory)),
+    operation: clean(context.operation),
     status: outcome.ok ? "success" : "error",
-    message: outcome.ok ? successMessage(data) : outcome.error.message,
-    assets: outcome.ok ? assetsFor(data, manifest) : []
+    message: clean(outcome.ok ? successMessage(data) : outcome.error.message),
+    assets: outcome.ok ? assetsFor(data) : []
   };
 }
 function trimOutput(value) {
@@ -31477,6 +31625,16 @@ function resolveDirectory(projectRoot, directory) {
     return { ok: false, message: `directory "${label}" resolves outside the project root` };
   }
   return { ok: true, path: target.full };
+}
+function reconfirmDirectory(projectRoot, resolved) {
+  const again = resolveDirectory(projectRoot, resolved);
+  if (!again.ok) {
+    return again;
+  }
+  if (again.path !== resolved) {
+    return { ok: false, message: `directory "${resolved}" changed while the command was being prepared` };
+  }
+  return again;
 }
 function isInside(root, candidate) {
   return candidate === root || candidate.startsWith(root + path.sep);
@@ -31670,6 +31828,10 @@ async function runTool(spec, rawArgs, context) {
   const offending = argv.find((part) => CONTROL_CHARS2.test(part));
   if (offending !== undefined) {
     return render(fail("invalid_input", "arguments must not contain control characters"), directory.path);
+  }
+  const settled = reconfirmDirectory(context.projectRoot, directory.path);
+  if (!settled.ok) {
+    return render(fail("invalid_input", settled.message), directory.path);
   }
   const cwd = spec.directoryMode === "cwd" ? directory.path : rootPath;
   const result = await context.runCli({ argv, cwd });
@@ -32556,20 +32718,20 @@ function assetTable(doc2, assets) {
 function renderResult(data, doc2 = requireDocument()) {
   const panel = toPanelData(data);
   const fragment = doc2.createDocumentFragment();
-  const card = element(doc2, "article", "card");
-  fragment.appendChild(card);
+  const card2 = element(doc2, "article", "card");
+  fragment.appendChild(card2);
   const header = element(doc2, "header", "card-head");
   header.appendChild(element(doc2, "p", "operation", panel.operation));
   header.appendChild(element(doc2, "h1", "facet", panel.facet));
-  card.appendChild(header);
+  card2.appendChild(header);
   const status = element(doc2, "p", `status status-${panel.status}`);
   status.appendChild(element(doc2, "span", "dot"));
   status.appendChild(element(doc2, "span", "status-text", STATUS_LABELS[panel.status]));
-  card.appendChild(status);
+  card2.appendChild(status);
   if (panel.message !== undefined) {
-    card.appendChild(element(doc2, "p", "message", panel.message));
+    card2.appendChild(element(doc2, "p", "message", panel.message));
   }
-  card.appendChild(panel.assets.length > 0 ? assetTable(doc2, panel.assets) : element(doc2, "p", "empty", "No assets reported."));
+  card2.appendChild(panel.assets.length > 0 ? assetTable(doc2, panel.assets) : element(doc2, "p", "empty", "No assets reported."));
   return fragment;
 }
 function mount(container, data, doc2 = requireDocument()) {
@@ -32831,6 +32993,7 @@ Boolean requesting whether a visible border and background is provided by the ho
 container holding the app. Specify either width or maxWidth, and either height or maxHeight.\`),locale:g.string().optional().describe("User's language and region preference in BCP 47 format."),timeZone:g.string().optional().describe("User's timezone in IANA format."),userAgent:g.string().optional().describe("Host application identifier."),platform:g.union([g.literal("web"),g.literal("desktop"),g.literal("mobile")]).optional().describe("Platform type for responsive design decisions."),deviceCapabilities:g.object({touch:g.boolean().optional().describe("Whether the device supports touch input."),hover:g.boolean().optional().describe("Whether the device supports hover interactions.")}).optional().describe("Device input capabilities."),safeAreaInsets:g.object({top:g.number().describe("Top safe area inset in pixels."),right:g.number().describe("Right safe area inset in pixels."),bottom:g.number().describe("Bottom safe area inset in pixels."),left:g.number().describe("Left safe area inset in pixels.")}).optional().describe("Mobile safe area boundaries in pixels.")}).passthrough(),Vk=g.object({method:g.literal("ui/notifications/host-context-changed"),params:bU.describe("Partial context update containing only changed fields.")}),V0=g.object({method:g.literal("ui/update-model-context"),params:g.object({content:g.array(xr).optional().describe("Context content blocks (text, image, etc.)."),structuredContent:g.record(g.string(),g.unknown().describe("Structured content for machine-readable context data.")).optional().describe("Structured content for machine-readable context data.")})}),F0=g.object({method:g.literal("ui/initialize"),params:g.object({appInfo:ar.describe("App identification (name and version)."),appCapabilities:Wk.describe("Features and capabilities this app provides."),protocolVersion:g.string().describe("Protocol version this app supports.")})}),Fk=g.object({protocolVersion:g.string().describe('Negotiated protocol version string (e.g., "2025-11-21").'),hostInfo:ar.describe("Host application identification and version."),hostCapabilities:Sk.describe("Features and capabilities provided by the host."),hostContext:bU.describe("Rich context about the host environment.")}).passthrough(),Ak={target:"draft-2020-12"};async function oU(r,i){let t=r["~standard"];if(t.jsonSchema)return t.jsonSchema[i](Ak);if(t.vendor==="zod"){let{z:u}=await Promise.resolve().then(() => (Qr(),yu));return u.toJSONSchema(r,{io:i})}throw Error(\`Schema (vendor: \${t.vendor}) does not implement Standard JSON Schema (~standard.jsonSchema). Use a library that does (zod v4, ArkType, Valibot) or wrap your schema accordingly.\`)}async function $U(r,i,t=""){let u=await r["~standard"].validate(i);if(u.issues){let n=u.issues.map((v)=>{let o=v.path?.map(($)=>typeof $==="object"?$.key:$).join(".");return o?\`\${o}: \${v.message}\`:v.message}).join("; ");throw Error(t+n)}return u.value}class IU extends gU{_appInfo;_capabilities;options;_hostCapabilities;_hostInfo;_hostContext;_registeredTools={};_initializedSent=!1;_assertInitialized(r){if(this._initializedSent)return;let i=\`[ext-apps] App.\${r}() called before connect() completed the ui/initialize handshake. Await app.connect() before calling this method, or move data loading to an ontoolresult handler.\`;if(this.options?.strict)throw Error(i);console.warn(\`\${i}. This will throw in a future release.\`)}eventSchemas={toolinput:zk,toolinputpartial:mk,toolresult:Gk,toolcancelled:Nk,hostcontextchanged:Vk};static ONE_SHOT_EVENTS=new Set(["toolinput","toolinputpartial","toolresult","toolcancelled"]);_everHadListener=new Set;_assertHandlerTiming(r){if(!IU.ONE_SHOT_EVENTS.has(r)||this._everHadListener.has(r))return;if(this._everHadListener.add(r),!this._initializedSent)return;let i=\`[ext-apps] "\${String(r)}" handler registered after connect() completed the ui/initialize handshake. The host may have already sent this notification. Register handlers before calling app.connect().\`;if(this.options?.strict)throw Error(i);console.warn(i)}setEventHandler(r,i){if(i)this._assertHandlerTiming(r);super.setEventHandler(r,i)}addEventListener(r,i){this._assertHandlerTiming(r),super.addEventListener(r,i)}onEventDispatch(r,i){if(r==="hostcontextchanged")this._hostContext={...this._hostContext,...i}}constructor(r,i={},t={autoResize:!0}){super(t);if(this._appInfo=r,this._capabilities=i,this.options=t,!t.allowUnsafeEval)g.config({jitless:!0});this.setRequestHandler(sr,(u)=>{return console.log("Received ping:",u.params),{}}),this.setEventHandler("hostcontextchanged",void 0)}registerCapabilities(r){if(this.transport)throw Error("Cannot register capabilities after transport is established");this._capabilities=oo(this._capabilities,r)}registerTool(r,i,t){if(this._registeredTools[r])throw Error(\`Tool \${r} is already registered\`);let u=this,n=()=>{if(u._initializedSent&&u._capabilities.tools?.listChanged)u.sendToolListChanged()},v=i.inputSchema!==void 0,o={title:i.title,description:i.description,inputSchema:i.inputSchema,outputSchema:i.outputSchema,annotations:i.annotations,_meta:i._meta,enabled:!0,enable(){this.enabled=!0,n()},disable(){this.enabled=!1,n()},update($){Object.assign(this,$),n()},remove(){if(u._registeredTools[r]!==o)return;delete u._registeredTools[r],n()},handler:async($,b)=>{if(!o.enabled)throw Error(\`Tool \${r} is disabled\`);let l;if(v){let I=o.inputSchema,D=I?await $U(I,$??{},\`Invalid input for tool \${r}: \`):$??{};l=await t(D,b)}else l=await t(b);if(o.outputSchema&&!l.isError)l.structuredContent=await $U(o.outputSchema,l.structuredContent,\`Invalid output for tool \${r}: \`);return l}};if(this._registeredTools[r]=o,!this._capabilities.tools&&!this.transport)this.registerCapabilities({tools:{listChanged:!0}});return this.ensureToolHandlersInitialized(),n(),o}_toolHandlersInitialized=!1;ensureToolHandlersInitialized(){if(this._toolHandlersInitialized)return;this._toolHandlersInitialized=!0,this.oncalltool=async(r,i)=>{let t=this._registeredTools[r.name];if(!t)throw Error(\`Tool \${r.name} not found\`);return t.handler(r.arguments,i)},this.onlisttools=async(r,i)=>{return{tools:await Promise.all(Object.entries(this._registeredTools).filter(([t,u])=>u.enabled).map(async([t,u])=>{let n={name:t,title:u.title,description:u.description,inputSchema:u.inputSchema?await oU(u.inputSchema,"input"):{type:"object",properties:{}}};if(u.outputSchema)n.outputSchema=await oU(u.outputSchema,"output");if(u.annotations)n.annotations=u.annotations;if(u._meta)n._meta=u._meta;return n}))}}}async sendToolListChanged(r={}){this._assertInitialized("sendToolListChanged"),await this.notification({method:"notifications/tools/list_changed",params:r})}getHostCapabilities(){return this._hostCapabilities}getHostVersion(){return this._hostInfo}getHostContext(){return this._hostContext}get ontoolinput(){return this.getEventHandler("toolinput")}set ontoolinput(r){this.setEventHandler("toolinput",r)}get ontoolinputpartial(){return this.getEventHandler("toolinputpartial")}set ontoolinputpartial(r){this.setEventHandler("toolinputpartial",r)}get ontoolresult(){return this.getEventHandler("toolresult")}set ontoolresult(r){this.setEventHandler("toolresult",r)}get ontoolcancelled(){return this.getEventHandler("toolcancelled")}set ontoolcancelled(r){this.setEventHandler("toolcancelled",r)}get onhostcontextchanged(){return this.getEventHandler("hostcontextchanged")}set onhostcontextchanged(r){this.setEventHandler("hostcontextchanged",r)}_onteardown;get onteardown(){return this._onteardown}set onteardown(r){this.warnIfRequestHandlerReplaced("onteardown",this._onteardown,r),this._onteardown=r,this.replaceRequestHandler(jk,(i,t)=>{if(!this._onteardown)throw Error("No onteardown handler set");return this._onteardown(i.params,t)})}_oncalltool;get oncalltool(){return this._oncalltool}set oncalltool(r){this.warnIfRequestHandlerReplaced("oncalltool",this._oncalltool,r),this._oncalltool=r,this.replaceRequestHandler(At,(i,t)=>{if(!this._oncalltool)throw Error("No oncalltool handler set");return this._oncalltool(i.params,t)})}_onlisttools;get onlisttools(){return this._onlisttools}set onlisttools(r){this.warnIfRequestHandlerReplaced("onlisttools",this._onlisttools,r),this._onlisttools=r,this.replaceRequestHandler(Ft,(i,t)=>{if(!this._onlisttools)throw Error("No onlisttools handler set");return this._onlisttools(i.params,t)})}assertCapabilityForMethod(r){switch(r){case"sampling/createMessage":if(!this._hostCapabilities?.sampling)throw Error(\`Host does not support sampling (required for \${r})\`);break}}assertRequestHandlerCapability(r){switch(r){case"tools/call":case"tools/list":if(!this._capabilities.tools)throw Error(\`Client does not support tool capability (required for \${r})\`);return;case"ping":case"ui/resource-teardown":return;default:throw Error(\`No handler for method \${r} registered\`)}}assertNotificationCapability(r){}assertTaskCapability(r){throw Error("Tasks are not supported in MCP Apps")}assertTaskHandlerCapability(r){throw Error("Task handlers are not supported in MCP Apps")}async callServerTool(r,i){if(this._assertInitialized("callServerTool"),typeof r==="string")throw Error(\`callServerTool() expects an object as its first argument, but received a string ("\${r}"). Did you mean: callServerTool({ name: "\${r}", arguments: { ... } })?\`);return await this.request({method:"tools/call",params:r},Fr,{onprogress:()=>{},resetTimeoutOnProgress:!0,...i})}async readServerResource(r,i){return this._assertInitialized("readServerResource"),await this.request({method:"resources/read",params:r},Jt,i)}async listServerResources(r,i){return this._assertInitialized("listServerResources"),await this.request({method:"resources/list",params:r},Lt,i)}async createSamplingMessage(r,i){this._assertInitialized("createSamplingMessage");let t=r.tools?Ht:Bt;return await this.request({method:"sampling/createMessage",params:r},t,i)}sendMessage(r,i){return this._assertInitialized("sendMessage"),this.request({method:"ui/message",params:r},kk,i)}sendLog(r){return this.notification({method:"notifications/message",params:r})}updateModelContext(r,i){return this._assertInitialized("updateModelContext"),this.request({method:"ui/update-model-context",params:r},vi,i)}openLink(r,i){return this._assertInitialized("openLink"),this.request({method:"ui/open-link",params:r},wk,i)}sendOpenLink=this.openLink;downloadFile(r,i){return this._assertInitialized("downloadFile"),this.request({method:"ui/download-file",params:r},ek,i)}requestTeardown(r={}){return this.notification({method:"ui/notifications/request-teardown",params:r})}requestDisplayMode(r,i){return this._assertInitialized("requestDisplayMode"),this.request({method:"ui/request-display-mode",params:r},Lk,i)}sendSizeChanged(r){return this.notification({method:"ui/notifications/size-changed",params:r})}setupSizeChangedNotifications(){let r=!1,i=0,t=0,u=()=>{if(r)return;r=!0,requestAnimationFrame(()=>{r=!1;let v=document.documentElement,o=v.style.height;v.style.height="max-content";let $=Math.ceil(v.getBoundingClientRect().height);v.style.height=o;let b=Math.ceil(window.innerWidth);if(b!==i||$!==t)i=b,t=$,this.sendSizeChanged({width:b,height:$})})};u();let n=new ResizeObserver(u);return n.observe(document.documentElement),n.observe(document.body),()=>n.disconnect()}async connect(r=new lU(window.parent,window.parent),i){if(this.transport)throw Error("App is already connected. Call close() before connecting again.");this._initializedSent=!1,await super.connect(r);try{let t=await this.request({method:"ui/initialize",params:{appCapabilities:this._capabilities,appInfo:this._appInfo,protocolVersion:Ik}},Fk,i);if(t===void 0)throw Error(\`Server sent invalid initialize result: \${t}\`);if(this._hostCapabilities=t.hostCapabilities,this._hostInfo=t.hostInfo,this._hostContext=t.hostContext,await this.notification({method:"ui/notifications/initialized"}),this._initializedSent=!0,this.options?.autoResize)this.setupSizeChangedNotifications()}catch(t){throw this.close(),t}}}var kr={purple:"#A78BFA",green:"#42CDAA",coral:"#FA8B8D",dark:"#1F1F28"};var cU={dim:"#666666",dimmer:"#999999"},qt={violet:"#8b5cf6",pink:"#ec4899",sky:"#38bdf8",amber:"#fde047"};var _U={skill:qt.violet,agent:qt.pink,command:qt.sky,server:qt.amber};function F4(r){let i=r.replace("#","");return[parseInt(i.substring(0,2),16),parseInt(i.substring(2,4),16),parseInt(i.substring(4,6),16)]}var Et={primary:kr.purple,secondary:kr.green,tertiary:kr.coral,brand:kr.purple,dark:kr.dark,success:kr.green,warning:kr.coral,focus:qt.pink,hint:cU.dim,keyword:cU.dimmer,gradient:[kr.purple,kr.green,kr.coral],gradientRGB:[F4(kr.purple),F4(kr.green),F4(kr.coral)]},UU=32;function Bk(r,i,t){return\`#\${r.toString(16).padStart(2,"0")}\${i.toString(16).padStart(2,"0")}\${t.toString(16).padStart(2,"0")}\`}function A4(r,i,t){return[Math.round(r[0]+(i[0]-r[0])*t),Math.round(r[1]+(i[1]-r[1])*t),Math.round(r[2]+(i[2]-r[2])*t)]}function Hk(){let[r,i,t]=Et.gradientRGB,u=[];for(let n=0;n<UU;n++){let v=n/UU*3%3,o;if(v<1)o=A4(r,i,v);else if(v<2)o=A4(i,t,v-1);else o=A4(t,r,v-2);u.push(Bk(...o))}return u}var K0=Hk();var Kk="facet-panel";var xk={success:"Succeeded",error:"Failed",pending:"In progress"},y0={success:Et.success,error:Et.warning,pending:Et.primary};function $i(r){return typeof r==="object"&&r!==null&&!Array.isArray(r)}function DU(r){return $i(r)?r:{}}function nn(...r){for(let i of r)if(typeof i==="string"&&i.trim()!=="")return i;return}function wU(r){if(!Array.isArray(r))return[];return r.map((i)=>$i(i)&&i.type==="text"?i.text:void 0).filter((i)=>typeof i==="string")}function eU(r){try{let i=JSON.parse(r);return $i(i)?i:void 0}catch{return}}function Mk(r){let i=wU(r).filter((t)=>eU(t)===void 0);return i.length>0?i.join(\`
 \`):void 0}function Yk(r){for(let i of wU(r)){let t=eU(i);if(t!==void 0)return t}return}function qk(r){if(r===void 0)return{failed:!1};if(typeof r.ok!=="boolean")return{fields:r,failed:!1};if(r.ok===!0){let t=r.data;return{...$i(t)?{fields:t}:{},failed:!1}}let i=nn(DU(r.error).message);return{...i===void 0?{}:{message:i},failed:!0}}var Ek={success:"success",succeeded:"success",ok:"success",done:"success",error:"error",failed:"error",failure:"error",pending:"pending",running:"pending","in-progress":"pending"};function Xk(r,i){let t=nn(r.status,r.state),u=t===void 0?void 0:Ek[t.trim().toLowerCase()];if(u!==void 0)return u;return i?"error":"success"}function Tk(r){if(!Array.isArray(r))return[];let i=[];for(let t of r){if(!$i(t))continue;let u=nn(t.name,t.id,t.path);if(u===void 0)continue;let n=nn(t.detail,t.description,t.summary);i.push({type:nn(t.type,t.kind)??"unknown",name:u,...n===void 0?{}:{detail:n}})}return i}function kU(r,i={}){let t=DU(r),u=t.structuredContent,n=qk(Yk(t.content)),v=$i(u)?u:n.fields??t,o=nn(v.message,v.error,v.summary,n.message,Mk(t.content)),$=t.isError===!0||n.failed||v.ok===!1||v.success===!1;return{facet:nn(v.facet,v.name,i.facet)??"Unknown facet",operation:nn(v.operation,v.tool,i.operation)??"Result",status:Xk(v,$),...o===void 0?{}:{message:o},assets:Tk(v.assets)}}function y(r,i,t,u){let n=r.createElement(i);if(t!==void 0)n.className=t;if(u!==void 0)n.textContent=u;return n}function Rk(r){return\`chip type-\${Object.hasOwn(_U,r)?r:"unknown"}\`}function fk(r,i){let t=y(r,"th",void 0,i);return t.setAttribute("scope","col"),t}function Ck(r,i){let t=y(r,"table","assets");t.appendChild(y(r,"caption",void 0,"Assets"));let u=y(r,"thead"),n=y(r,"tr");for(let o of["Type","Name","Description"])n.appendChild(fk(r,o));u.appendChild(n),t.appendChild(u);let v=y(r,"tbody");for(let o of i){let $=y(r,"tr"),b=y(r,"td"),l=y(r,"span",Rk(o.type));l.appendChild(y(r,"span","dot")),l.appendChild(r.createTextNode(o.type)),b.appendChild(l),$.appendChild(b),$.appendChild(y(r,"td","asset-name",o.name)),$.appendChild(y(r,"td","asset-detail",o.detail??"—")),v.appendChild($)}return t.appendChild(v),t}function Zk(r,i=zU()){let t=kU(r),u=i.createDocumentFragment(),n=y(i,"article","card");u.appendChild(n);let v=y(i,"header","card-head");v.appendChild(y(i,"p","operation",t.operation)),v.appendChild(y(i,"h1","facet",t.facet)),n.appendChild(v);let o=y(i,"p",\`status status-\${t.status}\`);if(o.appendChild(y(i,"span","dot")),o.appendChild(y(i,"span","status-text",xk[t.status])),n.appendChild(o),t.message!==void 0)n.appendChild(y(i,"p","message",t.message));return n.appendChild(t.assets.length>0?Ck(i,t.assets):y(i,"p","empty","No assets reported.")),u}function yk(r,i,t=zU()){r.textContent="",r.appendChild(Zk(i,t))}function zU(){let r=globalThis.document;if(r===void 0)throw Error("No global document — pass one to renderResult() explicitly.");return r}async function dk(){let r=globalThis,i=r.document,t=r.window;if(i===void 0||t===void 0)return;let u=i.getElementById(Kk);if(u===null)return;let n=new go({name:"facet-studio-panel",version:"0.2.0"});n.ontoolresult=(o)=>{let $=n.getHostContext()?.toolInfo?.tool.name;yk(u,kU(o,{operation:$??"Result"}),i)},n.onhostcontextchanged=(o)=>{if(o.theme!==void 0)J4(o.theme)},await n.connect(new $o(t.parent,t.parent));let v=n.getHostContext()?.theme;if(v!==void 0)J4(v);return n}if(typeof globalThis.document<"u")dk().catch((r)=>{console.error("Facet Studio panel failed to start:",r)});
 `;
+var NOT_SERVING = "facet-studio is not serving";
 function contain(registrar, run) {
   try {
     run();
@@ -32839,8 +33002,35 @@ function contain(registrar, run) {
     return { registrar, error: error51 };
   }
 }
-function reportRegistrationFailure({ registrar, error: error51 }) {
-  console.error(`facet-studio: the ${registrar} registrar failed; serving without it:`, error51);
+function nameOf(registrar) {
+  return registrar === "registration" ? "the registration seam" : `the ${registrar} registrar`;
+}
+function reasonFor(error51) {
+  return error51 instanceof Error ? error51.message : String(error51);
+}
+function describe3(failure) {
+  return `${nameOf(failure.registrar)} failed: ${reasonFor(failure.error)}`;
+}
+function reportRegistrationFailure(failure) {
+  console.error(`facet-studio: ${describe3(failure)}`, failure.error);
+}
+var SERVED_REQUESTS = [
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ReadResourceRequestSchema
+];
+function refuseToServe(server, failure) {
+  const message = `${NOT_SERVING}: ${describe3(failure)}`;
+  const refuse = () => {
+    throw new McpError(ErrorCode.InternalError, message);
+  };
+  for (const schema of SERVED_REQUESTS) {
+    server.server.setRequestHandler(schema, refuse);
+  }
+  server.server.fallbackRequestHandler = refuse;
+  console.error(message);
 }
 function registerAll(server, deps) {
   const failures = [
@@ -32855,10 +33045,12 @@ function registerAll(server, deps) {
     })
   ];
   const report = deps.onRegistrationError ?? reportRegistrationFailure;
-  for (const failure of failures) {
-    if (failure !== undefined) {
-      report(failure);
-    }
+  const failed = failures.filter((failure) => failure !== undefined);
+  for (const failure of failed) {
+    report(failure);
+  }
+  if (failed.length > 0) {
+    throw new AggregateError(failed.map((failure) => failure.error), failed.map(describe3).join("; "));
   }
 }
 function createServer(deps = {}) {
@@ -32879,6 +33071,7 @@ function createServer(deps = {}) {
     });
     if (failure !== undefined) {
       (deps.onRegistrationError ?? reportRegistrationFailure)(failure);
+      refuseToServe(server, failure);
     }
   };
   return server;
@@ -32912,5 +33105,6 @@ export {
   createServer,
   VIEW_SCRIPT_BANNER,
   SERVER_VERSION,
-  SERVER_NAME
+  SERVER_NAME,
+  NOT_SERVING
 };
