@@ -40,10 +40,30 @@ The CLI installs facet-studio through both configured adapters, lists the resolv
 | Command | facet-list | List installed facets. |
 | Tool | facet_verify | Validate the current facet. |
 | Tool | facet_install | Restore a project from its lockfile. |
+| Tool | facet_browse | Search the registry. |
+| Tool | facet_detail | Everything about one published facet, including its version history. |
+| Tool | facet_project | What this project has installed, read from facets.json and facets.lock. |
+| Tool | facet_manifest | The facet.json being authored, and whatever has been built from it. |
 
-## Branded panels and the MCP server
+## The console and the MCP server
 
-facet-studio ships with an MCP server and a Claude Code plugin. The plugin provides tools and text output in Claude Code; the MCP server adds structured panels and rich context to Claude Desktop (via connector setup), ChatGPT, and Cursor. Claude Code CLI is terminal-only and returns full text output. Codex Desktop does not render panels yet (upstream bug tracked). Every operation returns complete text regardless—panels are an enhancement, not a requirement.
+facet-studio ships with an MCP server and a Claude Code plugin. The plugin provides tools and text output in Claude Code; the MCP server adds the console panel to Claude Desktop (via connector setup), ChatGPT, and Cursor. Claude Code CLI is terminal-only and returns full text output. Codex Desktop does not render panels yet (upstream bug tracked). Every operation returns complete text regardless—the console is an enhancement, not a requirement.
+
+Where it renders, every facet tool points at one panel, and that panel stays put across calls. It has three screens:
+
+| Screen | Shows | What you can do there |
+|---|---|---|
+| Registry | What is published | Search, filter by asset type, open a facet, install one |
+| Installed | What this project has | Check for updates, update, remove (with undo), repair a project whose two files disagree |
+| Authoring | The facet you are writing | Edit its name, version and description; add, describe and delete assets; verify and build |
+
+Opening a facet from the Registry screen gives its detail: contents, every published version, and the README it ships.
+
+A read fills its screen. An operation—add, remove, update, install, modify, build, verify—puts its outcome on a strip along the top and the screen underneath is re-read, so what is on show is the state the operation actually produced rather than a card claiming it.
+
+Two limits are stated on the screens rather than hidden. Making a facet private is a one-way door, because the CLI can set the private flag and has no operation to clear it, so it is confirmed as one. And publishing has no MCP tool at all—a published version can never be replaced—so the Authoring screen points at `facet publish` instead of offering a button.
+
+The Installed screen reads `facets.json` and `facets.lock` directly rather than shelling out, because `facet list` renders a terminal view with no `--json` and prints a name and a version per row—not the assets, and not whether the lockfile still answers the manifest. It only ever reads: every change still goes through the CLI.
 
 The server bundles inside the Claude plugin:
 

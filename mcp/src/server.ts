@@ -41,7 +41,7 @@ import { compileBrowserScript } from "../../scripts/build-plugin.js" with { type
 
 /** How this server introduces itself in the MCP handshake. */
 export const SERVER_NAME = "facet-studio";
-export const SERVER_VERSION = "0.4.0";
+export const SERVER_VERSION = "0.5.0";
 
 /**
  * The first line of the compiled view script. Minification renames everything
