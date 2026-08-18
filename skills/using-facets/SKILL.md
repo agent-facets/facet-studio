@@ -75,6 +75,10 @@ Follow the printed instructions. Prefer `--json` on `facet create`, `facet modif
 and `facet build` when you need to parse results. Always finish authoring with
 `facet build --verify`.
 
+## MCP Server Routing
+
+When the facet-studio MCP server is connected, prefer its `facet_*` tools over raw CLI calls — same operations, structured results, branded panels where the host renders them; load the `presentation` skill for output formatting. The CLI path below remains the fallback.
+
 ## Headless environments
 
 In CI or sandboxes without a TTY:

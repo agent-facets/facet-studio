@@ -10,6 +10,8 @@ Uninstall one or more facets and clean up their assets.
 
 Remove named facets from your project. This is destructive — it deletes installed assets and updates `facets.json` and `facets.lock`. Confirm before proceeding.
 
+If the facet-studio MCP server is connected, run this operation through its `facet_remove` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 ## Steps
 
 1. Validate facet names. Each name must match `^(@[a-z](-?[a-z0-9])*/)?[a-z](-?[a-z0-9])*$` (alphanumeric with hyphens, optional scoped namespace); each part must be ≤ 64 chars. Refuse and stop if any name is invalid.

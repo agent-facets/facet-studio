@@ -39,6 +39,10 @@ facet build
 ```
 This produces `dist/<name>-<version>.facet`.
 
+## MCP Server Routing
+
+When the facet-studio MCP server is connected, prefer its `facet_*` tools over raw CLI calls — same operations, structured results, branded panels where the host renders them; load the `presentation` skill for output formatting. The CLI path below remains the fallback. Use `facet_login` and `facet_whoami` to manage registry identity.
+
 **Publish (with consent):** Before publishing, remind the user that facet versions are immutable — all published changes are permanent. Only proceed with their explicit approval. Then run:
 ```sh
 facet publish

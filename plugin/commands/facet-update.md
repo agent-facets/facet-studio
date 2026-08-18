@@ -10,6 +10,8 @@ Move a facet to a newer version.
 
 Update an installed facet to a different version. Updating is a re-add operation at the target version.
 
+If the facet-studio MCP server is connected, run this operation through its `facet_update` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 ## Steps
 
 1. **Show the current facets** to identify what you're updating:

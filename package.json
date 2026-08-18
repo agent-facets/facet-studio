@@ -1,5 +1,9 @@
 {
   "name": "facet-studio-dev",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "build:plugin": "bun scripts/build-plugin.ts",
+    "test:plugin": "bun test scripts/build-plugin.test.ts"
+  }
 }

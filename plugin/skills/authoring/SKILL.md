@@ -48,3 +48,7 @@ The model's trigger text comes directly from facet.json's description. Lead with
 4. Build and install: `facet build`
 
 Skills may declare companion files via the manifest `files` list. The primary asset file is the entrypoint; refer to `facet instructions authoring` and `facet instructions manifest` for complete reference.
+
+## MCP Server Routing
+
+When the facet-studio MCP server is connected, prefer its `facet_*` tools over raw CLI calls — same operations, structured results, branded panels where the host renders them; load the `presentation` skill for output formatting. The CLI path below remains the fallback.

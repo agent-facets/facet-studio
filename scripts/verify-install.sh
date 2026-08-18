@@ -33,11 +33,12 @@ rsync -a --exclude .git --exclude .brigade --exclude plugin --exclude node_modul
 cd "$tmp/proj"
 facet add ./vendor/facet-studio </dev/null
 
-# Define expected files (22 total)
+# Define expected files (24 total)
 declare -a required_paths=(
-  # claude-code adapter (11 files)
+  # claude-code adapter (12 files)
   ".claude/skills/using-facets/SKILL.md"
   ".claude/skills/authoring/SKILL.md"
+  ".claude/skills/presentation/SKILL.md"
   ".claude/commands/facet-add.md"
   ".claude/commands/facet-build.md"
   ".claude/commands/facet-create.md"
@@ -47,9 +48,10 @@ declare -a required_paths=(
   ".claude/commands/facet-remove.md"
   ".claude/commands/facet-update.md"
   ".claude/agents/facet-author.md"
-  # codex adapter (11 files) - adapter materialization only; Codex does not scan .agents/commands/
+  # codex adapter (12 files) - adapter materialization only; Codex does not scan .agents/commands/
   ".agents/skills/using-facets/SKILL.md"
   ".agents/skills/authoring/SKILL.md"
+  ".agents/skills/presentation/SKILL.md"
   ".agents/commands/facet-add.md"
   ".agents/commands/facet-build.md"
   ".agents/commands/facet-create.md"
@@ -102,4 +104,23 @@ if ! grep -q "^developer_instructions = " .codex/agents/facet-author.toml; then
 fi
 
 echo "NOTE: .agents/commands/ checks verify adapter materialization only; Codex does not scan .agents/commands/ (upstream adapter issue)"
+
+# Verify plugin MCP server exists and boots
+if [[ ! -f "$repo_root/plugin/mcp/server.mjs" ]]; then
+  echo "error: plugin MCP server not found at plugin/mcp/server.mjs" >&2
+  exit 1
+fi
+
+# Boot the server in background with stdin piped from sleep to keep it alive, verify it stays running
+cd "$repo_root"
+(sleep 10) | node plugin/mcp/server.mjs >/dev/null 2>&1 &
+server_pid=$!
+sleep 3
+if ! kill -0 "$server_pid" 2>/dev/null; then
+  echo "error: plugin MCP server failed to boot or exited prematurely (PID $server_pid)" >&2
+  exit 1
+fi
+kill "$server_pid" 2>/dev/null || true
+
+echo "NOTE: plugin MCP server verified to boot and stay alive"
 echo "verify-install: OK"

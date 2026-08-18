@@ -6,6 +6,8 @@ List all installed facets in your project.
 
 Print the names and versions of every facet declared in `facets.json`. This is read-only — it does not modify files.
 
+If the facet-studio MCP server is connected, run this operation through its `facet_list` tool instead of the shell — same behavior, structured result, branded panel where supported. Otherwise continue below.
+
 ## Steps
 
 1. Run the list command:

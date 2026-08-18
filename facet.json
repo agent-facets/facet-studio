@@ -1,6 +1,6 @@
 {
   "name": "facet-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Author, publish, and install agent facets from your AI assistant. Skills, commands, and an agent that drive the facet CLI end to end.",
   "skills": {
     "using-facets": {
@@ -8,6 +8,9 @@
     },
     "authoring": {
       "description": "Guidelines for authoring quality facet assets - skills, agents, and commands: naming rules, manifest metadata, adapter config, and content conventions. Load when writing or reviewing facet asset content."
+    },
+    "presentation": {
+      "description": "Branded presentation contract for facet operations: how to format facet results consistently - status lines, asset labels, tables - in any host, and when to route through the facet-studio MCP server for rich panels."
     }
   },
   "files": [
