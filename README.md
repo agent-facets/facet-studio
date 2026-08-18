@@ -2,6 +2,26 @@
 
 facet-studio is a toolkit for authoring, building, and installing agent facets â€” reusable collections of skills and commands for AI assistants. It includes skills and commands that guide you through the full facet workflow.
 
+## See it in action
+
+### Claude Desktop (Code view)
+
+The Claude Code adapter materializes facet-studio into the project. Claude Desktop loads the `using-facets` skill, runs the `facet-list` command, and confirms the installed version.
+
+![facet-studio running in Claude Desktop Code view](docs/images/claude-desktop.png)
+
+### Codex
+
+Codex discovers the same project-local skill under `.agents/skills/`, follows its CLI-first workflow, and runs `facet list`.
+
+![Codex using the facet-studio using-facets skill](docs/images/codex.png)
+
+### facet CLI
+
+The CLI installs facet-studio through both configured adapters, lists the resolved version, and verifies the facet manifest.
+
+![Installing and verifying facet-studio with the facet CLI](docs/images/cli.png)
+
 ## Assets
 
 | Type | Name | Purpose |
@@ -18,6 +38,8 @@ facet-studio is a toolkit for authoring, building, and installing agent facets â
 | Command | facet-update | Update installed facets. |
 | Command | facet-remove | Remove facets. |
 | Command | facet-list | List installed facets. |
+| Tool | facet_verify | Validate the current facet. |
+| Tool | facet_install | Restore a project from its lockfile. |
 
 ## Branded panels and the MCP server
 
@@ -27,7 +49,8 @@ The server bundles inside the Claude plugin:
 
 | Host | Panels | Support |
 |------|--------|---------|
-| Claude Desktop | Yes | Connector-enabled |
+| Claude Desktop (Chat) | Yes | Connector-enabled |
+| Claude Desktop (Code tab) | No | Terminal only |
 | ChatGPT | Yes | Connector-enabled |
 | Cursor | Yes | MCP-enabled |
 | Claude Code CLI | No | Terminal only |

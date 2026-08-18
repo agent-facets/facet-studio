@@ -44,7 +44,7 @@ When `facet-studio` MCP tools are available in-session, use them—they return t
 
 ## Example: error card
 
-```
+`````
 ## facet build — my-skill
 
 ✗ Build failed.
@@ -52,4 +52,4 @@ When `facet-studio` MCP tools are available in-session, use them—they return t
 ```
 error: plugin not found: nosuchplugin
 ```
-```
+`````
