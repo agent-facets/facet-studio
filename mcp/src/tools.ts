@@ -10,15 +10,22 @@
 //
 // Directory arguments get the same treatment from the other direction: they are
 // resolved against the project root and refused if the result lands outside it,
-// symlinks included.
+// symlinks included — and checked a second time right before the spawn, so a
+// symlink dropped in after we approved the path doesn't get to ride along.
+//
+// The second rule is about what we say afterwards. Everything in a result comes
+// from the command that ran and nowhere else. We never open a file to pad a
+// result out, because a fact the command didn't report is a fact the caller
+// didn't ask for — and on a private project that fact might be a secret.
 
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { execFile } from "node:child_process";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { scrubSecrets } from "./auth.js";
 import type { RegistrationDeps } from "./server.js";
 
 /** The panel every tool points at. mcp-panels registers the resource itself. */
@@ -328,24 +335,33 @@ export type ToolPresentation = {
 export interface OutcomeContext {
     /** Human label for the operation, e.g. "Verify facet". */
     operation: string;
-    /** The resolved directory the run acted on — where we look for a manifest. */
+    /** The resolved directory the run acted on. Only ever used for its name. */
     directory: string;
 }
 
 /**
  * Renders an outcome as tool content.
  *
- * Two views of one run. The text part is the whole payload and never changes
- * shape, so a host with no panel still sees everything. Alongside it goes the
- * summary the panel card is built from — same facts, arranged for a reader
- * rather than a parser.
+ * Two views of one run, and the important thing is that they are two views of
+ * the *same* run. The text part is the whole payload and never changes shape,
+ * so a host with no panel still sees everything. Alongside it goes the summary
+ * the panel card is built from — the same facts, arranged for a reader rather
+ * than a parser, and drawn from nowhere else.
+ *
+ * Both go through the same scrub on the way out, so a credential the CLI echoed
+ * back at us cannot show up in one channel while the other looks clean.
  */
 export function renderOutcome(outcome: ToolOutcome, context: OutcomeContext): CallToolResult {
     return {
-        content: [{ type: "text", text: JSON.stringify(outcome, null, 2) }],
+        content: [{ type: "text", text: scrubSecrets(JSON.stringify(outcome, null, 2)) }],
         structuredContent: summarize(outcome, context),
         ...(outcome.ok ? {} : { isError: true }),
     };
+}
+
+/** The scrub every string takes before it can be shown to anyone. */
+function clean(value: string): string {
+    return scrubSecrets(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -362,29 +378,23 @@ function stringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-/** Reads the facet manifest sitting in a directory, if there is a readable one. */
-function readManifest(directory: string): Record<string, unknown> | undefined {
-    try {
-        const parsed: unknown = JSON.parse(readFileSync(path.join(directory, "facet.json"), "utf8"));
-        return isRecord(parsed) ? parsed : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
 /**
  * Which facet this run was about.
  *
  * The CLI names it in most `--json` payloads, but not all of them: `modify`
- * reports only what changed, and the text commands report prose. So we fall back
- * to the manifest on disk, and past that to the directory's own name. The card
- * always gets something true to show.
+ * reports only what changed, and the text commands report prose. When it doesn't
+ * say, we fall back to the name of the directory the caller pointed us at.
+ *
+ * Reading the name out of facet.json would give a prettier answer, and we used
+ * to. It's the wrong answer: it puts a fact on the card that the command never
+ * reported, and once you're willing to open that file to fill one gap there is
+ * no principled place to stop. The directory name is something the caller
+ * already knows, which makes it honest even when it's dull.
  */
-function facetNameFor(data: unknown, manifest: Record<string, unknown> | undefined, directory: string): string {
+function facetNameFor(data: unknown, directory: string): string {
     const fromCli = isRecord(data) ? stringField(data, "name") : undefined;
-    const fromManifest = manifest === undefined ? undefined : stringField(manifest, "name");
     const base = path.basename(directory);
-    return fromCli ?? fromManifest ?? (base.length > 0 ? base : directory);
+    return fromCli ?? (base.length > 0 ? base : directory);
 }
 
 /** How the CLI lays its assets out on disk, so a file path can name its kind. */
@@ -394,48 +404,26 @@ const ASSET_FILE_PATTERNS: readonly { pattern: RegExp; type: string }[] = [
     { pattern: /^commands\/([^/]+)\.md$/, type: "command" },
 ];
 
-/** Turns the file list a build or create reports into typed asset rows. */
-function assetsFromFiles(files: readonly string[]): ToolAsset[] {
+/**
+ * The rows of the card's table: the files this run reported touching, and only
+ * those.
+ *
+ * A command that reports no files gets an empty table. That looks like less of a
+ * card, and it is — but a table listing everything the facet happens to contain
+ * would be describing a different question than the one the caller asked, and
+ * `facet list` in particular would show rows it never produced.
+ */
+function assetsFor(data: unknown): ToolAsset[] {
+    const files = isRecord(data) ? stringArray(data["files"]) : [];
     return files.map(file => {
         for (const { pattern, type } of ASSET_FILE_PATTERNS) {
             const name = file.match(pattern)?.[1];
             if (name !== undefined) {
-                return { type, name, detail: file };
+                return { type, name: clean(name), detail: clean(file) };
             }
         }
-        return { type: "file", name: file };
+        return { type: "file", name: clean(file) };
     });
-}
-
-/** The assets a manifest declares — what a facet holds, rather than what one run touched. */
-function assetsFromManifest(manifest: Record<string, unknown>): ToolAsset[] {
-    const groups = [
-        ["skills", "skill"],
-        ["agents", "agent"],
-        ["commands", "command"],
-    ] as const;
-
-    const rows: ToolAsset[] = [];
-    for (const [key, type] of groups) {
-        const group = manifest[key];
-        if (!isRecord(group)) {
-            continue;
-        }
-        for (const [name, entry] of Object.entries(group)) {
-            const detail = isRecord(entry) ? stringField(entry, "description") : undefined;
-            rows.push({ type, name, ...(detail === undefined ? {} : { detail }) });
-        }
-    }
-    return rows;
-}
-
-/** What the run produced: the files it reported, or failing that, what the facet holds. */
-function assetsFor(data: unknown, manifest: Record<string, unknown> | undefined): ToolAsset[] {
-    const files = isRecord(data) ? stringArray(data["files"]) : [];
-    if (files.length > 0) {
-        return assetsFromFiles(files);
-    }
-    return manifest === undefined ? [] : assetsFromManifest(manifest);
 }
 
 /** A line about how it went, in the CLI's own words wherever it gave us any. */
@@ -453,19 +441,24 @@ function successMessage(data: unknown): string {
     return "Completed successfully.";
 }
 
-/** Boils one finished run down to the handful of fields the card draws. */
+/**
+ * Boils one finished run down to the handful of fields the card draws.
+ *
+ * Every field here traces back to this run: what the caller asked for, what the
+ * CLI answered, and how it went. Nothing is read off disk to fill a gap, so
+ * whatever the card shows, the text payload beside it accounts for.
+ */
 function summarize(outcome: ToolOutcome, context: OutcomeContext): ToolPresentation {
     const data = outcome.ok ? outcome.data : undefined;
-    const manifest = readManifest(context.directory);
 
     return {
-        facet: facetNameFor(data, manifest, context.directory),
-        operation: context.operation,
+        facet: clean(facetNameFor(data, context.directory)),
+        operation: clean(context.operation),
         status: outcome.ok ? "success" : "error",
         // On the way out we hand over the CLI's own sentence, not a dump of the
         // error object — the card has one line for this and it should read.
-        message: outcome.ok ? successMessage(data) : outcome.error.message,
-        assets: outcome.ok ? assetsFor(data, manifest) : [],
+        message: clean(outcome.ok ? successMessage(data) : outcome.error.message),
+        assets: outcome.ok ? assetsFor(data) : [],
     };
 }
 
@@ -566,6 +559,31 @@ export function resolveDirectory(projectRoot: string, directory: string | undefi
         return { ok: false, message: `directory "${label}" resolves outside the project root` };
     }
     return { ok: true, path: target.full };
+}
+
+/**
+ * Checks that an already-approved directory is still the same directory.
+ *
+ * The first check answers "where does this path lead?" — but that answer has a
+ * shelf life. Between approving a path and handing it to a child process,
+ * anything else on the machine can delete that directory and put a symlink to
+ * somewhere else in its place, and the CLI would follow it.
+ *
+ * So we ask again at the last possible moment, and insist on the same answer.
+ * The path we re-check is the resolved one, which is also the one the CLI gets,
+ * so there is no second interpretation to go wrong. This narrows the window to
+ * the spawn itself rather than closing it outright — that's as tight as it goes
+ * without the child opening the directory for us.
+ */
+function reconfirmDirectory(projectRoot: string, resolved: string): DirectoryResolution {
+    const again = resolveDirectory(projectRoot, resolved);
+    if (!again.ok) {
+        return again;
+    }
+    if (again.path !== resolved) {
+        return { ok: false, message: `directory "${resolved}" changed while the command was being prepared` };
+    }
+    return again;
 }
 
 /** True when `candidate` is the root itself or sits somewhere beneath it. */
@@ -820,8 +838,9 @@ export async function runTool(spec: ToolSpec, rawArgs: unknown, context: { proje
     const rootPath = root.ok ? root.path : path.resolve(context.projectRoot);
 
     // Every exit below goes through here, so no result can leave without the
-    // summary the panel needs. Before a directory argument has been checked, the
-    // root stands in for it — that's the only directory we know is safe to read.
+    // summary the panel needs. Before a directory argument has been checked the
+    // root stands in for it, which only ever affects what the card calls the
+    // facet when the CLI didn't say.
     const render = (outcome: ToolOutcome, directory: string = rootPath): CallToolResult =>
         renderOutcome(outcome, { operation: spec.title, directory });
 
@@ -836,11 +855,19 @@ export async function runTool(spec: ToolSpec, rawArgs: unknown, context: { proje
         return render(fail("invalid_input", directory.message));
     }
 
+    // The CLI is given the resolved path, never the label the caller wrote, so
+    // it can't take a second and different reading of the same argument.
     const argv = spec.argv(parsed.data as never, directory.path);
     const offending = argv.find(part => CONTROL_CHARS.test(part));
     if (offending !== undefined) {
         // Belt and braces: nothing validated above can reach here.
         return render(fail("invalid_input", "arguments must not contain control characters"), directory.path);
+    }
+
+    // Last thing before the spawn: is that directory still the one we approved?
+    const settled = reconfirmDirectory(context.projectRoot, directory.path);
+    if (!settled.ok) {
+        return render(fail("invalid_input", settled.message), directory.path);
     }
 
     const cwd = spec.directoryMode === "cwd" ? directory.path : rootPath;

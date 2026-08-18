@@ -687,9 +687,10 @@ describe("the summary the panel draws", () => {
         }
     });
 
-    test("when the payload has no name, the manifest supplies one", async () => {
+    test("when the payload has no name, the directory supplies one and the manifest stays shut", async () => {
         // `facet modify --json` reports only what it changed, so this is the case
-        // that used to leave the card reading "Unknown facet".
+        // that used to leave the card reading "Unknown facet" — and then, for a
+        // while, reading facet.json to do better than that.
         const root = scratch();
         writeFileSync(
             path.join(root, "facet.json"),
@@ -698,10 +699,12 @@ describe("the summary the panel draws", () => {
         const harness = await connect({ projectRoot: root, cliResult: { stdout: '{"ok":true,"changes":["set version to \\"1.0.0\\""]}' } });
         try {
             const card = summary(await harness.client.callTool({ name: "facet_modify", arguments: { target: "facet", version: "1.0.0" } }));
-            expect(card.facet).toBe("manifest-facet");
+            expect(card.facet).toBe(path.basename(root));
+            expect(card.facet).not.toBe("Unknown facet");
             expect(card.operation).toBe("Modify facet");
             expect(card.message).toBe('set version to "1.0.0"');
-            expect(card.assets).toEqual([{ type: "skill", name: "demo", detail: "A demo skill." }]);
+            // The modify reported a change, not a file, so there is nothing to table.
+            expect(card.assets).toEqual([]);
         } finally {
             await harness.close();
         }
@@ -769,6 +772,189 @@ describe("the summary the panel draws", () => {
     });
 });
 
+describe("the card reports the operation, never the manifest", () => {
+    // A manifest that a hostile or merely private project could plausibly hold:
+    // one line nobody outside the project should see, and one credential.
+    const PRIVATE_LINE = "PRIVATE-ROADMAP-Q3 unreleased acquisition codename";
+    const CREDENTIAL = "fct_pub_abcdefgh.ijklmnop12345678";
+
+    /** A project root whose facet.json declares assets the CLI will not report. */
+    function rootWithSecretManifest(): string {
+        const root = scratch();
+        writeFileSync(
+            path.join(root, "facet.json"),
+            JSON.stringify({
+                name: "manifest-facet",
+                skills: { "internal-notes": { description: `${PRIVATE_LINE} ${CREDENTIAL}` } },
+                agents: { "internal-agent": { description: PRIVATE_LINE } },
+                commands: { "internal-command": { description: PRIVATE_LINE } },
+            }),
+        );
+        return root;
+    }
+
+    /** Everything a host can read off a result, as one string per channel. */
+    function channels(result: unknown): { text: string; structured: string } {
+        return {
+            text: JSON.stringify((result as { content: unknown }).content),
+            structured: JSON.stringify((result as { structuredContent: unknown }).structuredContent),
+        };
+    }
+
+    test("a text-mode result carries the CLI's line and nothing from the manifest", async () => {
+        // The reported leak, exactly: text mode returns `{output:"added"}`, so the
+        // text channel holds one word — while the card used to carry every skill
+        // description in facet.json, credential and all.
+        const root = rootWithSecretManifest();
+        const harness = await connect({ projectRoot: root, cliResult: { stdout: "added" } });
+        try {
+            const result = await harness.client.callTool({ name: "facet_add", arguments: { name: "probe" } });
+            const { text, structured } = channels(result);
+            expect(payload(result)).toEqual({ ok: true, data: { output: "added" } });
+
+            expect(text).toContain("added");
+            for (const channel of [text, structured]) {
+                expect(channel).not.toContain(PRIVATE_LINE);
+                expect(channel).not.toContain("fct_pub_");
+                expect(channel).not.toContain("internal-notes");
+            }
+            expect(summary(result).assets).toEqual([]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("facet_list shows no asset rows, because listing produces none", async () => {
+        const root = rootWithSecretManifest();
+        const harness = await connect({ projectRoot: root, cliResult: { stdout: "probe@1.0.0" } });
+        try {
+            const card = summary(await harness.client.callTool({ name: "facet_list", arguments: {} }));
+            expect(card.assets).toEqual([]);
+            expect(card.message).toBe("probe@1.0.0");
+            // The name is the directory's, not the manifest's: a list operation
+            // never read facet.json, so the card must not claim it did.
+            expect(card.facet).toBe(path.basename(root));
+            expect(card.facet).not.toBe("manifest-facet");
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a build still lists exactly the files it genuinely reported", async () => {
+        // The other half of the rule: dropping the manifest must not cost us the
+        // rows a command really did produce.
+        const root = rootWithSecretManifest();
+        const stdout = JSON.stringify({ ok: true, name: "probe-facet", files: ["skills/demo/SKILL.md", "dist/probe-facet.facet"] });
+        const harness = await connect({ projectRoot: root, cliResult: { stdout } });
+        try {
+            const card = summary(await harness.client.callTool({ name: "facet_build", arguments: {} }));
+            expect(card.facet).toBe("probe-facet");
+            expect(card.assets).toEqual([
+                { type: "skill", name: "demo", detail: "skills/demo/SKILL.md" },
+                { type: "file", name: "dist/probe-facet.facet" },
+            ]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a verify reports the assets it names, and no others", async () => {
+        const root = rootWithSecretManifest();
+        const stdout = JSON.stringify({ ok: true, verified: true, name: "probe-facet", files: ["agents/helper.md"] });
+        const harness = await connect({ projectRoot: root, cliResult: { stdout } });
+        try {
+            const card = summary(await harness.client.callTool({ name: "facet_verify", arguments: {} }));
+            expect(card.status).toBe("success");
+            expect(card.assets).toEqual([{ type: "agent", name: "helper", detail: "agents/helper.md" }]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a credential in the CLI's own words is redacted in both channels alike", async () => {
+        const root = scratch();
+        const harness = await connect({
+            projectRoot: root,
+            cliResult: { exitCode: 1, stdout: "", stderr: `registry refused the token ${CREDENTIAL}\n` },
+        });
+        try {
+            const result = await harness.client.callTool({ name: "facet_add", arguments: { name: "probe" } });
+            const { text, structured } = channels(result);
+            for (const channel of [text, structured]) {
+                expect(channel).not.toContain("fct_pub_");
+                expect(channel).toContain("[redacted]");
+            }
+            expect(summary(result).message).toBe("registry refused the token [redacted]");
+        } finally {
+            await harness.close();
+        }
+    });
+});
+
+describe("the directory is re-checked at the last moment", () => {
+    const verifySpec = TOOL_SPECS.find(candidate => candidate.name === "facet_verify") as (typeof TOOL_SPECS)[number];
+
+    test("the CLI is handed the resolved path, not the label it came from", async () => {
+        // A symlink that stays inside the root is allowed — but what goes to the
+        // CLI is where it lands, so nobody can repoint it after we approved it.
+        const root = scratch();
+        mkdirSync(path.join(root, "real"));
+        symlinkSync(path.join(root, "real"), path.join(root, "link"));
+        const harness = await connect({ projectRoot: root });
+        try {
+            await harness.client.callTool({ name: "facet_verify", arguments: { directory: "link" } });
+            expect(harness.calls).toHaveLength(1);
+            expect(harness.calls[0]?.argv).toEqual(["build", "--verify", "--json", path.join(root, "real")]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("a directory swapped for an escaping symlink after the check is refused before the spawn", async () => {
+        const root = scratch();
+        const outside = scratch();
+        const work = path.join(root, "work");
+        mkdirSync(work);
+
+        // Building the argv is the last thing that happens between the check and
+        // the spawn, so it stands in for anything else that could run in that
+        // window — here, an attacker replacing the approved directory.
+        const calls: CliInvocation[] = [];
+        const runCli: RunCli = invocation => {
+            calls.push(invocation);
+            return Promise.resolve({ exitCode: 0, stdout: '{"ok":true}', stderr: "" });
+        };
+        const interposing = {
+            ...verifySpec,
+            argv: (args: never, dir: string) => {
+                rmSync(work, { recursive: true, force: true });
+                symlinkSync(outside, work);
+                return verifySpec.argv(args, dir);
+            },
+        };
+
+        const result = await runTool(interposing, { directory: "work" }, { projectRoot: root, runCli });
+        const body = payload(result);
+        expect(body.ok).toBe(false);
+        expect(body.error?.code).toBe("invalid_input");
+        expect(calls).toHaveLength(0);
+        expect(result.isError).toBe(true);
+    });
+
+    test("a directory that is still what it was passes the second check", async () => {
+        const root = scratch();
+        mkdirSync(path.join(root, "steady"));
+        const harness = await connect({ projectRoot: root });
+        try {
+            const result = await harness.client.callTool({ name: "facet_verify", arguments: { directory: "steady" } });
+            expect(payload(result).ok).toBe(true);
+            expect(harness.calls).toHaveLength(1);
+        } finally {
+            await harness.close();
+        }
+    });
+});
+
 describe("the real facet CLI", () => {
     test(
         "scaffolds and verifies a facet through the tools, spawning the actual binary",
@@ -823,11 +1009,14 @@ describe("the real facet CLI", () => {
                 expect(verified.operation).toBe("Verify facet");
                 expect(verified.status).toBe("success");
 
-                // `facet list` prints prose and names nothing, so this one leans
-                // entirely on the manifest `create` just wrote.
+                // `facet list` prints prose and names nothing, and a real
+                // facet.json is sitting right there — so this is the live check
+                // that we still don't reach for it.
                 const listed = summary(await harness.client.callTool({ name: "facet_list", arguments: {} }));
-                expect(listed.facet).toBe("panel-probe");
+                expect(listed.facet).toBe(path.basename(projectRoot));
+                expect(listed.facet).not.toBe("panel-probe");
                 expect(listed.facet).not.toBe("Unknown facet");
+                expect(listed.assets).toEqual([]);
             } finally {
                 await harness.close();
             }
