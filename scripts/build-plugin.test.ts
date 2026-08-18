@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, readdir, symlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTPUT_MARKER, assertSafeOutDir, buildPlugin } from "./build-plugin.ts";
@@ -230,19 +230,44 @@ describe("buildPlugin", () => {
     }
   });
 
-  test("outDir is wiped before writing (stale files from a previous build do not survive)", async () => {
+  test("a rebuild replaces the generator's own output (stale files under it do not survive)", async () => {
     const src = await writeFixtureFacet();
     const out = await tempDir();
 
-    // Build once so the directory is genuinely a previous output - that is what
-    // earns it the right to be wiped - then leave junk behind in it.
+    // Build once so the directory is genuinely a previous output, then leave
+    // junk behind inside the directories this generator owns.
     await buildPlugin(src, out);
-    await mkdir(join(out, "stale-dir"), { recursive: true });
-    await Bun.write(join(out, "stale-dir", "leftover.txt"), "should be gone");
+    await Bun.write(join(out, "skills", "gone-skill", "SKILL.md"), "should be gone");
+    await Bun.write(join(out, "agents", "gone.md"), "should be gone");
+    await Bun.write(join(out, "commands", "gone.md"), "should be gone");
+    await Bun.write(join(out, ".claude-plugin", "stale.json"), "{}");
 
     await buildPlugin(src, out);
 
-    expect(await Bun.file(join(out, "stale-dir", "leftover.txt")).exists()).toBe(false);
+    for (const stale of [
+      join("skills", "gone-skill", "SKILL.md"),
+      join("agents", "gone.md"),
+      join("commands", "gone.md"),
+      join(".claude-plugin", "stale.json"),
+    ]) {
+      expect(await Bun.file(join(out, stale)).exists()).toBe(false);
+    }
+    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
+  });
+
+  test("a rebuild leaves alone everything the generator did not put there", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+
+    await buildPlugin(src, out);
+    // A person's own files, sitting next to the generated output.
+    await Bun.write(join(out, "notes.md"), VICTIM_BYTES);
+    await Bun.write(join(out, "my-stuff", "photo.jpg"), VICTIM_BYTES);
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "notes.md")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "my-stuff", "photo.jpg")).text()).toBe(VICTIM_BYTES);
     expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
   });
 
@@ -467,17 +492,16 @@ describe("buildPlugin refuses dangerous output directories", () => {
         m.skills = { "../../victim": { description: "traverses out of the source tree" } };
       },
     });
-    // A directory the generator is allowed to wipe (it carries the marker), so
-    // the only thing standing between keep.txt and deletion is the manifest
-    // being validated first.
+    // A real previous output, so the generator is free to rebuild here, holding
+    // a skill from that build. The only thing standing between skills/ and
+    // deletion is the manifest being validated first.
     const out = await tempDir();
-    await Bun.write(join(out, OUTPUT_MARKER), "generated\n");
-    await Bun.write(join(out, "keep.txt"), "still here");
+    await buildPlugin(await writeFixtureFacet(), out);
 
     await expect(buildPlugin(src, out)).rejects.toThrow("asset names");
 
-    // Proof the manifest is validated before the wipe, not after it.
-    expect(await Bun.file(join(out, "keep.txt")).text()).toBe("still here");
+    // Proof the manifest is validated before anything is removed.
+    expect(await Bun.file(join(out, "skills", "using-facets", "SKILL.md")).exists()).toBe(true);
   });
 });
 
@@ -557,16 +581,70 @@ describe("buildPlugin refuses an output directory that holds files it did not ge
     expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
   });
 
-  test("the marker makes a directory wipeable no matter what else is in it", async () => {
+  test("the marker is not a licence to delete: an unrelated file survives a rebuild", async () => {
+    // This used to assert the opposite - that the marker made a directory
+    // wipeable no matter what else was in it. It doesn't. The generator removes
+    // the entries it emits and nothing else, so a file it never wrote stays put
+    // even in a directory it is otherwise free to rebuild.
     const src = await writeFixtureFacet();
     const out = await tempDir();
-    await Bun.write(join(out, OUTPUT_MARKER), "generated\n");
-    await Bun.write(join(out, "anything-at-all.txt"), "from an older build");
+    await buildPlugin(src, out);
+    await Bun.write(join(out, "anything-at-all.txt"), "not from any build");
 
     await buildPlugin(src, out);
 
-    expect(await Bun.file(join(out, "anything-at-all.txt")).exists()).toBe(false);
+    expect(await Bun.file(join(out, "anything-at-all.txt")).text()).toBe("not from any build");
     expect(await Bun.file(join(out, OUTPUT_MARKER)).exists()).toBe(true);
+  });
+
+  test("a forged marker does not authorize deleting the files beside it", async () => {
+    // Anybody can create a file with the marker's name. Doing so next to real
+    // work must not hand the generator a licence to remove it.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await Bun.write(join(out, OUTPUT_MARKER), "I am definitely a build output, honest\n");
+    await Bun.write(join(out, "thesis.txt"), VICTIM_BYTES);
+    await Bun.write(join(out, "photos", "wedding.jpg"), VICTIM_BYTES);
+
+    await expect(buildPlugin(src, out)).rejects.toThrow("refusing to build into");
+
+    expect(await Bun.file(join(out, "thesis.txt")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "photos", "wedding.jpg")).text()).toBe(VICTIM_BYTES);
+  });
+
+  test("a forged marker over a directory of the generator's own names still spares it", async () => {
+    // The nastiest shape: the forged marker sits beside directories whose names
+    // the generator does emit, so name-matching alone would clear them. The
+    // marker is not one of ours, so the build refuses before touching anything.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await mkdir(join(out, OUTPUT_MARKER), { recursive: true }); // a directory, not our file
+    await Bun.write(join(out, "skills", "mine", "SKILL.md"), VICTIM_BYTES);
+    await Bun.write(join(out, "agents", "mine.md"), VICTIM_BYTES);
+
+    await expect(buildPlugin(src, out)).rejects.toThrow("refusing to build into");
+
+    expect(await Bun.file(join(out, "skills", "mine", "SKILL.md")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "agents", "mine.md")).text()).toBe(VICTIM_BYTES);
+  });
+
+  test("a symlink standing where the build must write is refused, not followed", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    const elsewhere = await tempDir();
+    await Bun.write(join(elsewhere, "keep.md"), VICTIM_BYTES);
+
+    // A genuine previous output, so the directory itself is fair game - then
+    // one of the names the build has to write is swapped for a symlink out.
+    await buildPlugin(src, out);
+    await rm(join(out, "skills"), { recursive: true, force: true });
+    await symlink(elsewhere, join(out, "skills"));
+
+    await expect(buildPlugin(src, out)).rejects.toThrow(/is a symlink/);
+
+    // Neither the link nor what it points at was disturbed.
+    expect(await Bun.file(join(elsewhere, "keep.md")).text()).toBe(VICTIM_BYTES);
+    expect((await lstat(join(out, "skills"))).isSymbolicLink()).toBe(true);
   });
 
   test("a plugin directory built before markers existed is still wipeable", async () => {
@@ -700,6 +778,59 @@ describe("buildPlugin refuses manifest paths that escape the trees", () => {
 
     await expect(buildPlugin(src, out)).rejects.toThrow("outside the facet source tree");
     expect(await walk(out)).toEqual([]);
+  });
+
+  test("a skill directory symlinked out of the source tree is refused, victim untouched", async () => {
+    // The skill's own SKILL.md - not a declared companion - used to be read
+    // without any boundary check, so pointing skills/demo at somebody else's
+    // directory quietly copied their file into the plugin.
+    const { parent, src } = await writeFixtureWithNeighbours({
+      mutateManifest: (m) => {
+        m.skills = { demo: { description: "lives outside the source tree" } };
+      },
+    });
+    const secrets = join(parent, "secrets");
+    await Bun.write(join(secrets, "SKILL.md"), VICTIM_BYTES);
+    await symlink(secrets, join(src, "skills", "demo"));
+    const out = await tempDir();
+
+    await expect(buildPlugin(src, out)).rejects.toThrow("outside the facet source tree");
+
+    expect(await Bun.file(join(secrets, "SKILL.md")).text()).toBe(VICTIM_BYTES);
+    expect(await walk(out)).toEqual([]);
+  });
+
+  test("an agent or command file symlinked out of the source tree is refused too", async () => {
+    for (const kind of ["agents", "commands"] as const) {
+      const { parent, src } = await writeFixtureWithNeighbours();
+      const outsideFile = join(parent, `stolen-${kind}.md`);
+      await Bun.write(outsideFile, VICTIM_BYTES);
+      const name = kind === "agents" ? "demo-agent" : "demo-command";
+      await rm(join(src, kind, `${name}.md`));
+      await symlink(outsideFile, join(src, kind, `${name}.md`));
+      const out = await tempDir();
+
+      await expect(buildPlugin(src, out)).rejects.toThrow("outside the facet source tree");
+
+      expect(await Bun.file(outsideFile).text()).toBe(VICTIM_BYTES);
+      expect(await walk(out)).toEqual([]);
+    }
+  });
+
+  test("a skill directory symlinked to somewhere else inside the source tree still builds", async () => {
+    // The boundary is the source tree, not the literal directory layout.
+    const src = await writeFixtureFacet({
+      mutateManifest: (m) => {
+        m.skills = { demo: { description: "linked, but still inside" } };
+      },
+    });
+    await Bun.write(join(src, "shared", "demo", "SKILL.md"), "# Linked\n\nBody.\n");
+    await symlink(join(src, "shared", "demo"), join(src, "skills", "demo"));
+    const out = await tempDir();
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "skills", "demo", "SKILL.md")).text()).toContain("Body.");
   });
 
   test("a companion elsewhere inside the source tree is still allowed", async () => {
