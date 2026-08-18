@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
-import { ASSET_TYPE_COLORS } from "@agent-facets/brand";
+import { ASSET_ACCENTS } from "./tokens.js";
 import type { RegistrationDeps } from "../server.js";
 import {
     buildPanelHtml,
@@ -408,12 +408,29 @@ describe("buildPanelHtml", () => {
         expect(html).toContain("background: var(--bg);");
     });
 
-    test("inlines the asset-type colors from the brand package", () => {
-        for (const [type, color] of Object.entries(ASSET_TYPE_COLORS)) {
+    test("inlines the asset-type accents from the registry token set", () => {
+        for (const [type, color] of Object.entries(ASSET_ACCENTS)) {
             expect(html).toContain(`--asset-${type}: ${color};`);
             expect(html).toContain(`.type-${type} .dot { background: var(--asset-${type}); }`);
         }
-        expect(html).toContain("--status-success: #42CDAA;");
+        expect(html).toContain("--status-success: var(--ok);");
+    });
+
+    test("uses the registry's accents, not the brand package's", () => {
+        // The registry and the brand package disagree, and the registry wins here:
+        // #8b5cf6 as small text is 4.39:1 on an elevated card, and the brand's
+        // inkFaint is 3.75:1 as body text. Tracked upstream as
+        // `brand-light-accents-fail-contrast`.
+        expect(html).toContain("--accent-skill: #a78bfa;");
+        expect(html).toContain("--accent-agent: #f472b6;");
+        expect(html).toContain("--ink-faint: #8583a8;");
+        expect(html).not.toContain("--ink-faint: #6a6890;");
+    });
+
+    test("carries a light theme whose accents are readable as text", () => {
+        expect(html).toContain("--accent-skill: #5b21b6;");
+        expect(html).toContain("--accent-agent: #9f1239;");
+        expect(html).toContain("--ok: #166534;");
     });
 
     test("asks nothing of the network", () => {

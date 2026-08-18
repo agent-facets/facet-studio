@@ -65,9 +65,13 @@ const EXPECTED_TOOLS = [
     "facet_update",
     "facet_install",
     "facet_remove",
+    "facet_browse",
     "facet_login",
     "facet_whoami",
 ] as const;
+
+/** The tool that comes from ./browse rather than the lifecycle spec table. */
+const BROWSE_TOOLS = ["facet_browse"] as const;
 
 /** The two tools that come from ./auth rather than the lifecycle spec table. */
 const AUTH_TOOLS = ["facet_login", "facet_whoami"] as const;
@@ -123,8 +127,8 @@ describe("the published surface, over a real client", () => {
     test("the hand-written tool list still matches the real spec table", () => {
         // If a lifecycle tool is added or renamed in tools.ts, this is the test
         // that fails first, and the fix is to update EXPECTED_TOOLS deliberately.
-        expect([...TOOL_SPECS.map(spec => spec.name), ...AUTH_TOOLS]).toEqual([...EXPECTED_TOOLS]);
-        expect(EXPECTED_TOOLS).toHaveLength(11);
+        expect([...TOOL_SPECS.map(spec => spec.name), ...BROWSE_TOOLS, ...AUTH_TOOLS]).toEqual([...EXPECTED_TOOLS]);
+        expect(EXPECTED_TOOLS).toHaveLength(12);
     });
 
     for (const [label, capabilities] of [
@@ -536,7 +540,7 @@ describe("registration failures", () => {
         await withBareServer(server, async client => {
             const error = seamFailure(server, depsCollecting(failures));
 
-            expect(failures.map(failure => failure.registrar)).toEqual(["tools", "auth"]);
+            expect(failures.map(failure => failure.registrar)).toEqual(["tools", "browse", "auth"]);
             // One error, both casualties named in it, so whoever sees only the
             // throw still learns everything the per-registrar reports said.
             expect(String(error)).toContain("tools registrar");

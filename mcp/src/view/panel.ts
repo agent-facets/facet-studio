@@ -13,7 +13,7 @@
 
 import { App, PostMessageTransport, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { RESOURCE_MIME_TYPE, registerAppResource } from "@modelcontextprotocol/ext-apps/server";
-import { ASSET_TYPE_COLORS, THEME, buildTokensCss } from "@agent-facets/brand";
+import { ASSET_ACCENTS, buildRegistryTokensCss } from "./tokens.js";
 import type { McpServer, RegisteredResource } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "../server.js";
 
@@ -47,12 +47,11 @@ const STATUS_LABELS: Record<PanelStatus, string> = {
     pending: "In progress",
 };
 
-/** Status colors, borrowed from the brand's semantic palette. */
+/** Status colors, matching the registry's semantic tokens. */
 const STATUS_COLORS: Record<PanelStatus, string> = {
-    success: THEME.success,
-    // The brand has no dedicated error tone; `warning` is its coral alarm color.
-    error: THEME.warning,
-    pending: THEME.primary,
+    success: "var(--ok)",
+    error: "var(--err)",
+    pending: "var(--act)",
 };
 
 /** One row of the asset table. */
@@ -322,11 +321,11 @@ function element(doc: PanelDocument, tag: string, className?: string, text?: str
 
 /**
  * The CSS class for an asset type. Payload strings never reach a class name:
- * a type is used only if the brand has a color for it, otherwise it falls back
+ * a type is used only if there is an accent for it, otherwise it falls back
  * to the neutral one.
  */
 function assetTypeClass(type: string): string {
-    const known = Object.hasOwn(ASSET_TYPE_COLORS, type) ? type : "unknown";
+    const known = Object.hasOwn(ASSET_ACCENTS, type) ? type : "unknown";
     return `chip type-${known}`;
 }
 
@@ -378,6 +377,11 @@ function assetTable(doc: PanelDocument, assets: PanelAsset[]): PanelElement {
  * global one.
  */
 export function renderResult(data: unknown, doc: PanelDocument = requireDocument()): PanelFragment {
+    const gallery = toGalleryData(data);
+    if (gallery !== undefined) {
+        return renderGallery(gallery, doc);
+    }
+
     const panel = toPanelData(data);
     const fragment = doc.createDocumentFragment();
 
@@ -405,6 +409,149 @@ export function renderResult(data: unknown, doc: PanelDocument = requireDocument
     );
 
     return fragment;
+}
+
+// ---------------------------------------------------------------------------
+// The gallery
+// ---------------------------------------------------------------------------
+
+/** One asset-count chip on a gallery card. */
+export interface GalleryCount {
+    type: string;
+    label: string;
+}
+
+/** One facet in the gallery. */
+export interface GalleryFacet {
+    name: string;
+    version: string;
+    description: string;
+    publisher: string;
+    published: string;
+    counts: GalleryCount[];
+}
+
+/** A browse result, once it has been checked. */
+export interface GalleryData {
+    query: string;
+    results: GalleryFacet[];
+}
+
+function toGalleryCount(value: unknown): GalleryCount | undefined {
+    const record = asRecord(value);
+    const label = firstString(record.label);
+    const type = firstString(record.type);
+    return label === undefined ? undefined : { type: type ?? "unknown", label };
+}
+
+function toGalleryFacet(value: unknown): GalleryFacet | undefined {
+    const record = asRecord(value);
+    const name = firstString(record.name);
+    if (name === undefined) {
+        return undefined;
+    }
+    const counts = Array.isArray(record.counts)
+        ? record.counts.map(toGalleryCount).filter((count): count is GalleryCount => count !== undefined)
+        : [];
+    return {
+        name,
+        version: firstString(record.version) ?? "",
+        description: firstString(record.description) ?? "",
+        publisher: firstString(record.publisher) ?? "",
+        published: firstString(record.published) ?? "",
+        counts,
+    };
+}
+
+/**
+ * Reads a browse result, or returns undefined when this isn't one.
+ *
+ * The discriminator is `kind: "gallery"` on the structured content. Anything
+ * else falls through to the lifecycle card.
+ */
+export function toGalleryData(value: unknown): GalleryData | undefined {
+    const outer = asRecord(value);
+    const structured = asRecord(outer.structuredContent);
+    const source = firstString(structured.kind) === "gallery"
+        ? structured
+        : firstString(outer.kind) === "gallery"
+          ? outer
+          : undefined;
+    if (source === undefined) {
+        return undefined;
+    }
+    const results = Array.isArray(source.results)
+        ? source.results.map(toGalleryFacet).filter((facet): facet is GalleryFacet => facet !== undefined)
+        : [];
+    return { query: firstString(source.query) ?? "", results };
+}
+
+/** Draws the browse gallery: one card per facet, in the registry's idiom. */
+export function renderGallery(data: GalleryData, doc: PanelDocument = requireDocument()): PanelFragment {
+    const fragment = doc.createDocumentFragment();
+
+    const head = element(doc, "header", "gallery-head");
+    head.appendChild(element(doc, "p", "operation", data.query === "" ? "Registry" : `Search · ${data.query}`));
+    const count = data.results.length;
+    head.appendChild(
+        element(doc, "p", "gallery-count", `${count} ${count === 1 ? "facet" : "facets"}`),
+    );
+    fragment.appendChild(head);
+
+    if (count === 0) {
+        fragment.appendChild(
+            element(
+                doc,
+                "p",
+                "empty",
+                data.query === ""
+                    ? "The registry returned no facets."
+                    : `Nothing matched ${data.query}.`,
+            ),
+        );
+        return fragment;
+    }
+
+    const list = element(doc, "div", "gallery");
+    for (const facet of data.results) {
+        list.appendChild(galleryCard(doc, facet));
+    }
+    fragment.appendChild(list);
+    return fragment;
+}
+
+function galleryCard(doc: PanelDocument, facet: GalleryFacet): PanelElement {
+    const card = element(doc, "article", "card facet-card");
+
+    const top = element(doc, "div", "facet-top");
+    top.appendChild(element(doc, "span", "facet-name", facet.name));
+    if (facet.version !== "") {
+        top.appendChild(element(doc, "span", "facet-version", facet.version));
+    }
+    card.appendChild(top);
+
+    if (facet.publisher !== "") {
+        card.appendChild(element(doc, "p", "facet-by", `by ${facet.publisher}`));
+    }
+    if (facet.description !== "") {
+        card.appendChild(element(doc, "p", "facet-desc", facet.description));
+    }
+
+    const foot = element(doc, "div", "facet-foot");
+    const chips = element(doc, "div", "facet-chips");
+    for (const entry of facet.counts) {
+        const chip = element(doc, "span", assetTypeClass(entry.type));
+        chip.appendChild(element(doc, "span", "dot"));
+        chip.appendChild(element(doc, "span", undefined, entry.label));
+        chips.appendChild(chip);
+    }
+    foot.appendChild(chips);
+    if (facet.published !== "") {
+        foot.appendChild(element(doc, "span", "facet-date", facet.published));
+    }
+    card.appendChild(foot);
+
+    return card;
 }
 
 /** Swaps the container's contents for a freshly rendered card. */
@@ -502,18 +649,27 @@ function requireMarker(shell: string, marker: string): void {
 }
 
 /**
- * The brand colors the card needs as CSS variables, generated from the brand
- * package so the palette has exactly one source of truth.
+ * The per-status and per-asset-type colors the card needs, as CSS variables.
+ *
+ * These sit on top of the registry token sheet: the tokens define the palette,
+ * this maps it onto the panel's own status and asset names. Asset chips get the
+ * registry's tinted-pill treatment — a translucent accent fill, a stronger accent
+ * border, and text mixed toward the ink so it stays readable on the fill.
  */
 function buildBrandCss(): string {
     const statusVars = Object.entries(STATUS_COLORS).map(([name, color]) => `  --status-${name}: ${color};`);
-    const assetVars = Object.entries(ASSET_TYPE_COLORS).map(([name, color]) => `  --asset-${name}: ${color};`);
+    const assetVars = Object.entries(ASSET_ACCENTS).map(([name, color]) => `  --asset-${name}: ${color};`);
     const statusRules = Object.keys(STATUS_COLORS).map(
         name => `.status-${name} .dot { background: var(--status-${name}); }`,
     );
-    const assetRules = Object.keys(ASSET_TYPE_COLORS).map(
-        name => `.type-${name} .dot { background: var(--asset-${name}); }`,
-    );
+    const assetRules = Object.keys(ASSET_ACCENTS).flatMap(name => [
+        `.type-${name} .dot { background: var(--asset-${name}); }`,
+        `.type-${name} {`,
+        `  background: color-mix(in oklab, var(--asset-${name}) 14%, transparent);`,
+        `  border-color: color-mix(in oklab, var(--asset-${name}) 36%, transparent);`,
+        `  color: color-mix(in oklab, var(--asset-${name}) 82%, var(--ink));`,
+        `}`,
+    ]);
 
     return [
         ":root {",
@@ -539,7 +695,7 @@ export function buildPanelHtml(options: BuildPanelHtmlOptions = {}): string {
     requireMarker(shell, TOKENS_MARKER);
     requireMarker(shell, VIEW_SCRIPT_MARKER);
 
-    const css = `${buildTokensCss()}\n${buildBrandCss()}`;
+    const css = `${buildRegistryTokensCss()}\n${buildBrandCss()}`;
     assertNoClosingTag(css, "style");
     const styleBlock = `<style>\n${css}\n</style>`;
 

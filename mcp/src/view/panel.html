@@ -31,9 +31,10 @@
         background: var(--bg);
         color: var(--ink);
         font-family: var(--sans);
-        font-size: 13px;
+        font-size: 14px;
         line-height: 1.5;
-        padding: 14px;
+        padding: 16px;
+        -webkit-font-smoothing: antialiased;
       }
 
       .panel {
@@ -45,87 +46,105 @@
         margin: 0;
       }
 
+      /* Cards are solid and clearly bounded, as they are on the registry. */
       .card {
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 14px 16px;
+        background: var(--bg-elev);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-xl);
+        padding: 18px 20px;
       }
 
       .card-head {
         border-bottom: 1px solid var(--line);
-        margin: 0 0 10px;
-        padding-bottom: 10px;
+        margin: 0 0 12px;
+        padding-bottom: 12px;
       }
 
+      /* The registry's eyebrow: mono, wide-tracked, with a diamond lead-in. */
       .operation {
         color: var(--ink-faint);
         font-family: var(--mono);
-        font-size: 11px;
-        letter-spacing: 0.08em;
-        margin: 0 0 2px;
+        font-size: 12px;
+        letter-spacing: 0.2em;
+        margin: 0 0 4px;
         text-transform: uppercase;
       }
 
+      .operation::before {
+        color: var(--accent-b);
+        content: "\25C6\00a0";
+      }
+
+      /* Facet names are mono everywhere in the registry, not sans. */
       .facet {
-        font-size: 17px;
+        font-family: var(--mono);
+        font-size: 16px;
         font-weight: 600;
+        letter-spacing: -0.01em;
         margin: 0;
       }
 
       .status {
         align-items: center;
         display: flex;
-        gap: 7px;
+        gap: 8px;
         margin: 0;
       }
 
       .dot {
-        border-radius: 50%;
+        border-radius: 2px;
         display: inline-block;
         flex: none;
-        height: 8px;
-        width: 8px;
+        height: 6px;
+        width: 6px;
       }
 
       .status-text {
+        font-family: var(--mono);
+        font-size: 12px;
         font-weight: 600;
       }
 
       .message {
         color: var(--ink-dim);
-        margin: 8px 0 0;
+        margin: 10px 0 0;
         overflow-wrap: anywhere;
         white-space: pre-wrap;
       }
 
       .assets {
         border-collapse: collapse;
-        margin-top: 12px;
+        margin-top: 14px;
         width: 100%;
       }
 
       .assets caption {
         color: var(--ink-faint);
-        font-size: 11px;
-        letter-spacing: 0.08em;
-        padding-bottom: 6px;
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.2em;
+        padding-bottom: 8px;
         text-align: left;
         text-transform: uppercase;
       }
 
+      .assets caption::before {
+        color: var(--accent-b);
+        content: "\25C6\00a0";
+      }
+
       .assets th {
         color: var(--ink-faint);
-        font-size: 11px;
+        font-family: var(--mono);
+        font-size: 12px;
         font-weight: 500;
-        letter-spacing: 0.04em;
         text-align: left;
       }
 
       .assets th,
       .assets td {
         border-bottom: 1px solid var(--line);
-        padding: 5px 8px 5px 0;
+        padding: 7px 10px 7px 0;
         vertical-align: top;
       }
 
@@ -133,17 +152,26 @@
         border-bottom: 0;
       }
 
+      /*
+        Asset type chips use the registry's tinted-pill recipe. The per-type fill,
+        border and text color are generated in panel.ts from the accent tokens.
+      */
       .chip {
         align-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-sm);
         color: var(--ink-dim);
         display: inline-flex;
         font-family: var(--mono);
-        font-size: 11px;
+        font-size: 11.5px;
         gap: 6px;
+        padding: 3px 9px;
+        white-space: nowrap;
       }
 
       .asset-name {
         font-family: var(--mono);
+        font-size: 12px;
         overflow-wrap: anywhere;
       }
 
@@ -154,7 +182,111 @@
 
       .empty {
         color: var(--ink-faint);
-        margin: 10px 0 0;
+        margin: 12px 0 0;
+      }
+
+      /* ---- Browse gallery ---- */
+
+      .gallery-head {
+        align-items: baseline;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+
+      .gallery-head .operation {
+        margin: 0;
+      }
+
+      .gallery-count {
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        font-size: 12px;
+        margin: 0;
+      }
+
+      .gallery {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .facet-card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        transition:
+          border-color var(--dur-base) ease,
+          transform var(--dur-base) ease;
+      }
+
+      .facet-card:hover {
+        border-color: color-mix(in oklab, var(--act) 45%, var(--line-strong));
+        transform: translateY(-2px);
+      }
+
+      .facet-top {
+        align-items: baseline;
+        display: flex;
+        gap: 10px;
+      }
+
+      .facet-name {
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        overflow-wrap: anywhere;
+      }
+
+      .facet-version {
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        font-size: 11px;
+        margin-left: auto;
+      }
+
+      .facet-by {
+        color: var(--ink-dim);
+        font-family: var(--mono);
+        font-size: 12px;
+        margin: 0;
+      }
+
+      .facet-desc {
+        color: var(--ink-dim);
+        margin: 0;
+        overflow-wrap: anywhere;
+        text-wrap: pretty;
+      }
+
+      .facet-foot {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        margin-top: 4px;
+      }
+
+      .facet-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .facet-date {
+        color: var(--ink-faint);
+        flex: none;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .facet-card:hover {
+          transform: none;
+        }
       }
     </style>
   </head>

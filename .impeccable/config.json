@@ -1,0 +1,83 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "geist",
+        "createdAt": "2026-08-18T16:46:59.839Z",
+        "reason": "Brand-mandated typeface from @agent-facets/brand FONT_STACKS (packages/brand/src/fonts.ts); already shipping in the facet CLI TUI and on agentfacets.io"
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist mono",
+        "createdAt": "2026-08-18T16:46:59.872Z",
+        "reason": "Brand-mandated typeface from @agent-facets/brand FONT_STACKS (packages/brand/src/fonts.ts); already shipping in the facet CLI TUI and on agentfacets.io"
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist mono variable",
+        "createdAt": "2026-08-18T16:46:59.902Z",
+        "reason": "Brand-mandated typeface from @agent-facets/brand FONT_STACKS (packages/brand/src/fonts.ts); already shipping in the facet CLI TUI and on agentfacets.io"
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist variable",
+        "createdAt": "2026-08-18T16:46:59.936Z",
+        "reason": "Brand-mandated typeface from @agent-facets/brand FONT_STACKS (packages/brand/src/fonts.ts); already shipping in the facet CLI TUI and on agentfacets.io"
+      },
+      {
+        "rule": "overused-font",
+        "value": "instrument serif",
+        "createdAt": "2026-08-18T16:46:59.966Z",
+        "reason": "Brand-mandated typeface from @agent-facets/brand FONT_STACKS (packages/brand/src/fonts.ts); already shipping in the facet CLI TUI and on agentfacets.io"
+      },
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          ".brigade/dishes/local-facet-studio-console/design/Main.dc.html"
+        ],
+        "createdAt": "2026-08-18T18:03:26.799Z",
+        "reason": "Matches the shipped registry card scale (facet-card.module.css: name 16px / desc 14px / owner 12px / chip 11.5px / version 11px). Operator directed the console to follow the registry styling."
+      },
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          ".brigade/dishes/local-facet-studio-console/design/Detail.dc.html"
+        ],
+        "createdAt": "2026-08-18T18:03:26.831Z",
+        "reason": "Matches the shipped registry card scale (facet-card.module.css: name 16px / desc 14px / owner 12px / chip 11.5px / version 11px). Operator directed the console to follow the registry styling."
+      },
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          ".brigade/dishes/local-facet-studio-console/design/Installed.dc.html"
+        ],
+        "createdAt": "2026-08-18T18:03:26.861Z",
+        "reason": "Matches the shipped registry card scale (facet-card.module.css: name 16px / desc 14px / owner 12px / chip 11.5px / version 11px). Operator directed the console to follow the registry styling."
+      },
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          ".brigade/dishes/local-facet-studio-console/design/Author.dc.html"
+        ],
+        "createdAt": "2026-08-18T18:03:26.892Z",
+        "reason": "Matches the shipped registry card scale (facet-card.module.css: name 16px / desc 14px / owner 12px / chip 11.5px / version 11px). Operator directed the console to follow the registry styling."
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          ".brigade/dishes/local-facet-studio-console/design/Main.dc.html"
+        ],
+        "createdAt": "2026-08-18T18:03:26.923Z",
+        "reason": "Search field is a fixed 44px-high flex row with align-items:center, so vertical inset comes from centering — same construction as the registry search-input"
+      }
+    ]
+  }
+}
