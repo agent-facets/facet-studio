@@ -284,6 +284,226 @@
         font-size: 12px;
       }
 
+      .facet-meta {
+        align-items: baseline;
+        display: flex;
+        flex: none;
+        gap: 14px;
+      }
+
+
+      /* ---- Interactive gallery ---- */
+
+      button {
+        font-family: inherit;
+      }
+
+      :focus-visible {
+        border-radius: var(--r-xs);
+        outline: 2px solid var(--accent-c);
+        outline-offset: 2px;
+      }
+
+      .filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-bottom: 14px;
+      }
+
+      .filter {
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: var(--r-pill);
+        color: var(--ink-faint);
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 6px 12px;
+        transition:
+          color var(--dur-fast) ease,
+          border-color var(--dur-fast) ease;
+      }
+
+      .filter:hover {
+        border-color: var(--line-strong);
+        color: var(--ink);
+      }
+
+      .filter-on {
+        background: var(--card);
+        border-color: var(--line-strong);
+        color: var(--ink);
+      }
+
+      /* Outline-first, the way the registry's own CTAs are. */
+      .cta {
+        align-items: center;
+        background: transparent;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--r-md);
+        color: var(--ink-dim);
+        cursor: pointer;
+        display: inline-flex;
+        flex: none;
+        font-size: var(--fs-small);
+        font-weight: 600;
+        gap: 7px;
+        justify-content: center;
+        min-height: 36px;
+        padding: 0 16px;
+        transition:
+          color var(--dur-fast) ease,
+          border-color var(--dur-fast) ease;
+      }
+
+      .cta:hover {
+        border-color: var(--act);
+        color: var(--ink);
+      }
+
+      .cta-lead {
+        border-color: color-mix(in oklab, var(--act) 55%, var(--line-strong));
+        color: var(--act);
+      }
+
+      .cta-lead:hover {
+        border-color: var(--act);
+        color: var(--act);
+      }
+
+      .cta-busy {
+        color: var(--ink-faint);
+        cursor: default;
+      }
+
+      .cta-done {
+        border-color: color-mix(in oklab, var(--ok) 45%, var(--line-strong));
+        color: var(--ok);
+        cursor: default;
+      }
+
+      .cta-failed {
+        border-color: color-mix(in oklab, var(--err) 45%, var(--line-strong));
+        color: var(--err);
+      }
+
+      .facet-top {
+        align-items: flex-start;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+      }
+
+      .facet-heading {
+        align-items: baseline;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      /* The name is a button, but it should read as a name. */
+      .facet-name {
+        background: none;
+        border: 0;
+        color: var(--ink);
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        overflow-wrap: anywhere;
+        padding: 0;
+        text-align: left;
+        transition: color var(--dur-fast) ease;
+      }
+
+      .facet-name:hover {
+        color: var(--accent-skill);
+      }
+
+      .facet-toggle {
+        background: none;
+        border: 0;
+        color: var(--ink-faint);
+        cursor: pointer;
+        flex: none;
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 0;
+        transition: color var(--dur-fast) ease;
+      }
+
+      .facet-toggle:hover {
+        color: var(--ink);
+      }
+
+      .facet-error {
+        color: var(--err);
+        font-size: 12px;
+        margin: 0;
+      }
+
+      .facet-card-open {
+        border-color: color-mix(in oklab, var(--act) 45%, var(--line-strong));
+      }
+
+      .facet-inside {
+        border-top: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        margin-top: 4px;
+        padding-top: 13px;
+      }
+
+      /* A grid, so the detail column lines up however wide the type chip is. */
+      .inside-row {
+        align-items: baseline;
+        display: grid;
+        gap: 11px;
+        grid-template-columns: 92px 160px minmax(0, 1fr);
+      }
+
+      .inside-row .chip {
+        justify-self: start;
+      }
+
+      .inside-name {
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .inside-detail {
+        color: var(--ink-dim);
+        font-size: var(--fs-small);
+        overflow-wrap: anywhere;
+        text-wrap: pretty;
+      }
+
+      .facet-loading {
+        color: var(--ink-faint);
+        font-size: var(--fs-small);
+        margin: 0;
+      }
+
+      .empty-state {
+        align-items: center;
+        border: 1px dashed var(--line-strong);
+        border-radius: var(--r-xl);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 40px 20px;
+      }
+
+      .empty-state .empty {
+        margin: 0;
+        text-align: center;
+      }
       @media (prefers-reduced-motion: reduce) {
         .facet-card:hover {
           transform: none;

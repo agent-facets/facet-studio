@@ -110,7 +110,7 @@ export function toCounts(counts: Record<string, number> | undefined): GalleryCou
         if (typeof n !== "number" || n <= 0) {
             continue;
         }
-        const label = COUNT_LABELS[type];
+        const label = COUNT_LABELS[type] ?? { one: type, many: `${type}s` };
         out.push({ type, label: `${n} ${n === 1 ? label.one : label.many}` });
     }
     return out;
@@ -146,6 +146,115 @@ export function toText(data: GalleryData): string {
         ? `${data.results.length} facet${data.results.length === 1 ? "" : "s"} on the registry:`
         : `${data.results.length} facet${data.results.length === 1 ? "" : "s"} matching ${data.query}:`;
     return [heading, ...lines].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// What is inside a facet
+// ---------------------------------------------------------------------------
+
+/** One asset inside a facet, as the expanded card lists it. */
+export interface ContentAsset {
+    type: string;
+    name: string;
+    detail: string;
+}
+
+/** The structured payload the panel folds into an expanded card. */
+export interface ContentsData {
+    kind: "contents";
+    facet: string;
+    version: string;
+    assets: ContentAsset[];
+}
+
+const VersionMetadata = z.object({
+    name: z.string().optional(),
+    version: z.string().optional(),
+    /** The facet's own manifest, verbatim, as a JSON string. */
+    manifest_json: z.string().optional(),
+});
+
+/** The manifest sections that hold assets, in the order a card lists them. */
+const MANIFEST_SECTIONS: readonly (readonly [string, string])[] = [
+    ["skills", "skill"],
+    ["agents", "agent"],
+    ["commands", "command"],
+    ["servers", "server"],
+];
+
+/**
+ * Pulls the asset list out of a facet's manifest.
+ *
+ * The manifest arrives as a JSON string, and it is published content rather than
+ * anything this server controls, so a malformed one yields an empty list instead
+ * of throwing — an expanded card with nothing in it beats a broken panel.
+ */
+export function parseManifestAssets(manifestJson: string | undefined): ContentAsset[] {
+    if (manifestJson === undefined) {
+        return [];
+    }
+    let manifest: unknown;
+    try {
+        manifest = JSON.parse(manifestJson);
+    } catch {
+        return [];
+    }
+    if (typeof manifest !== "object" || manifest === null) {
+        return [];
+    }
+    const record = manifest as Record<string, unknown>;
+    const assets: ContentAsset[] = [];
+    for (const [section, type] of MANIFEST_SECTIONS) {
+        const entries = record[section];
+        if (typeof entries !== "object" || entries === null) {
+            continue;
+        }
+        for (const [name, value] of Object.entries(entries as Record<string, unknown>)) {
+            const detail =
+                typeof value === "object" && value !== null && typeof (value as { description?: unknown }).description === "string"
+                    ? ((value as { description: string }).description)
+                    : "";
+            assets.push({ type, name, detail });
+        }
+    }
+    return assets;
+}
+
+const contentsShape = {
+    name: z.string().trim().min(1).max(200).describe("Facet name, e.g. `graphite` or `@scope/name`."),
+    version: z.string().trim().min(1).max(64).describe("Which version to read."),
+};
+
+const contentsSchema = z.object(contentsShape);
+
+/** Reads one published version and lists what is inside it. */
+export async function contents(args: { name: string; version: string }, deps: BrowseDeps = {}): Promise<ContentsData> {
+    const env = deps.env ?? process.env;
+    const base = stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
+    const path = `${encodeURIComponent(args.name)}/${encodeURIComponent(args.version)}`;
+    // A scoped name carries a slash that must stay a path separator, not %2F.
+    const url = `${base}/v0/facets/${path.replace(/%40/g, "@").replace(/%2F/g, "/")}`;
+
+    const fetchFacets = deps.fetchFacets ?? defaultFetch;
+    const parsed = VersionMetadata.parse(await fetchFacets(url));
+
+    return {
+        kind: "contents",
+        facet: parsed.name ?? args.name,
+        version: parsed.version ?? args.version,
+        assets: parseManifestAssets(parsed.manifest_json),
+    };
+}
+
+/** The plain-text half of a contents result. */
+export function contentsToText(data: ContentsData): string {
+    if (data.assets.length === 0) {
+        return `${data.facet}@${data.version} lists no assets.`;
+    }
+    const lines = data.assets.map(asset =>
+        asset.detail === "" ? `- ${asset.name} (${asset.type})` : `- ${asset.name} (${asset.type}) — ${asset.detail}`,
+    );
+    return [`Inside ${data.facet}@${data.version}:`, ...lines].join("\n");
 }
 
 const browseShape = {
@@ -239,4 +348,49 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
     } else {
         server.registerTool("facet_browse", config, handler as never);
     }
+
+    registerContents(server, deps);
+}
+
+/**
+ * Registers `facet_contents`.
+ *
+ * The panel calls this itself when someone expands a card, so it carries no UI
+ * metadata of its own — its result is folded into the gallery that is already on
+ * screen rather than replacing it.
+ */
+function registerContents(server: Pick<McpServer, "registerTool">, deps: BrowseDeps): void {
+    const config = {
+        title: "What is inside a facet",
+        description:
+            "List the skills, agents, commands and MCP servers inside one published facet version. " +
+            "Use this to show someone what they would actually be installing.",
+        inputSchema: contentsShape,
+        annotations: {
+            title: "What is inside a facet",
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: true,
+        },
+    };
+
+    const handler = async (rawArgs: unknown): Promise<CallToolResult> => {
+        const args = contentsSchema.parse(rawArgs ?? {});
+        try {
+            const data = await contents(args, deps);
+            return {
+                content: [{ type: "text", text: contentsToText(data) }],
+                structuredContent: data as unknown as Record<string, unknown>,
+            };
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            return {
+                isError: true,
+                content: [{ type: "text", text: `Could not read ${args.name}@${args.version}. ${reason}` }],
+            };
+        }
+    };
+
+    server.registerTool("facet_contents", config, handler as never);
 }

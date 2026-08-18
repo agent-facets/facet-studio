@@ -66,12 +66,13 @@ const EXPECTED_TOOLS = [
     "facet_install",
     "facet_remove",
     "facet_browse",
+    "facet_contents",
     "facet_login",
     "facet_whoami",
 ] as const;
 
 /** The tool that comes from ./browse rather than the lifecycle spec table. */
-const BROWSE_TOOLS = ["facet_browse"] as const;
+const BROWSE_TOOLS = ["facet_browse", "facet_contents"] as const;
 
 /** The two tools that come from ./auth rather than the lifecycle spec table. */
 const AUTH_TOOLS = ["facet_login", "facet_whoami"] as const;
@@ -128,7 +129,7 @@ describe("the published surface, over a real client", () => {
         // If a lifecycle tool is added or renamed in tools.ts, this is the test
         // that fails first, and the fix is to update EXPECTED_TOOLS deliberately.
         expect([...TOOL_SPECS.map(spec => spec.name), ...BROWSE_TOOLS, ...AUTH_TOOLS]).toEqual([...EXPECTED_TOOLS]);
-        expect(EXPECTED_TOOLS).toHaveLength(12);
+        expect(EXPECTED_TOOLS).toHaveLength(13);
     });
 
     for (const [label, capabilities] of [

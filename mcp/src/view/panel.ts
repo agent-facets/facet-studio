@@ -93,6 +93,8 @@ export interface PanelElement {
     textContent: string | null;
     appendChild(child: PanelNode): unknown;
     setAttribute(name: string, value: string): void;
+    /** Present on real elements; the gallery uses it to wire its buttons. */
+    addEventListener?(type: string, handler: () => void): void;
 }
 
 export interface PanelFragment {
@@ -377,11 +379,6 @@ function assetTable(doc: PanelDocument, assets: PanelAsset[]): PanelElement {
  * global one.
  */
 export function renderResult(data: unknown, doc: PanelDocument = requireDocument()): PanelFragment {
-    const gallery = toGalleryData(data);
-    if (gallery !== undefined) {
-        return renderGallery(gallery, doc);
-    }
-
     const panel = toPanelData(data);
     const fragment = doc.createDocumentFragment();
 
@@ -414,6 +411,11 @@ export function renderResult(data: unknown, doc: PanelDocument = requireDocument
 // ---------------------------------------------------------------------------
 // The gallery
 // ---------------------------------------------------------------------------
+//
+// This half is interactive: filter chips narrow the list, Install runs a real
+// tool call, and expanding a card fetches what is inside it. All of that state
+// lives in a controller rather than the DOM, so the whole thing can be driven in
+// a test with no browser and no host — click a button, assert what redrew.
 
 /** One asset-count chip on a gallery card. */
 export interface GalleryCount {
@@ -435,6 +437,42 @@ export interface GalleryFacet {
 export interface GalleryData {
     query: string;
     results: GalleryFacet[];
+}
+
+/** One asset inside an expanded facet. */
+export interface GalleryAsset {
+    type: string;
+    name: string;
+    detail: string;
+}
+
+/** Where an install has got to. */
+export type InstallState = "idle" | "installing" | "installed" | "failed";
+
+/** Everything the gallery draws that isn't the search result itself. */
+export interface GalleryState {
+    /** `all`, or one asset type. */
+    filter: string;
+    installs: Record<string, InstallState>;
+    /** Why an install failed, keyed by facet name. */
+    errors: Record<string, string>;
+    /** Which card is expanded, if any. */
+    open: string | null;
+    /** Asset lists already fetched, keyed by facet name. */
+    contents: Record<string, GalleryAsset[]>;
+    /** Facets whose contents are in flight. */
+    loading: Record<string, boolean>;
+}
+
+export function emptyGalleryState(): GalleryState {
+    return { filter: "all", installs: {}, errors: {}, open: null, contents: {}, loading: {} };
+}
+
+/** What the gallery asks the outside world to do. */
+export interface GalleryActions {
+    install(facet: GalleryFacet): void;
+    toggle(facet: GalleryFacet): void;
+    filter(type: string): void;
 }
 
 function toGalleryCount(value: unknown): GalleryCount | undefined {
@@ -486,48 +524,154 @@ export function toGalleryData(value: unknown): GalleryData | undefined {
     return { query: firstString(source.query) ?? "", results };
 }
 
+/** Reads a `facet_contents` result into the asset list a card shows. */
+export function toContentAssets(value: unknown): GalleryAsset[] | undefined {
+    const outer = asRecord(value);
+    const structured = asRecord(outer.structuredContent);
+    const source = firstString(structured.kind) === "contents"
+        ? structured
+        : firstString(outer.kind) === "contents"
+          ? outer
+          : undefined;
+    if (source === undefined || !Array.isArray(source.assets)) {
+        return undefined;
+    }
+    return source.assets
+        .map(entry => {
+            const record = asRecord(entry);
+            const name = firstString(record.name);
+            if (name === undefined) {
+                return undefined;
+            }
+            return {
+                name,
+                type: firstString(record.type) ?? "unknown",
+                detail: firstString(record.detail) ?? "",
+            };
+        })
+        .filter((asset): asset is GalleryAsset => asset !== undefined);
+}
+
+/** The filters offered above the list, in the registry's order. */
+const FILTERS: readonly { key: string; label: string }[] = [
+    { key: "all", label: "Everything" },
+    { key: "skill", label: "Skills" },
+    { key: "agent", label: "Agents" },
+    { key: "command", label: "Commands" },
+    { key: "server", label: "MCP" },
+];
+
+/** Whether a facet carries at least one asset of the filtered type. */
+function matchesFilter(facet: GalleryFacet, filter: string): boolean {
+    return filter === "all" || facet.counts.some(count => count.type === filter);
+}
+
+function onClick(node: PanelElement, handler: () => void): void {
+    node.addEventListener?.("click", handler);
+}
+
+/** A real button, so it is focusable and reachable from the keyboard. */
+function button(doc: PanelDocument, className: string, label: string, handler: () => void): PanelElement {
+    const node = element(doc, "button", className, label);
+    node.setAttribute("type", "button");
+    onClick(node, handler);
+    return node;
+}
+
 /** Draws the browse gallery: one card per facet, in the registry's idiom. */
-export function renderGallery(data: GalleryData, doc: PanelDocument = requireDocument()): PanelFragment {
+export function renderGallery(
+    data: GalleryData,
+    state: GalleryState,
+    actions: GalleryActions,
+    doc: PanelDocument = requireDocument(),
+): PanelFragment {
     const fragment = doc.createDocumentFragment();
+    const shown = data.results.filter(facet => matchesFilter(facet, state.filter));
 
     const head = element(doc, "header", "gallery-head");
     head.appendChild(element(doc, "p", "operation", data.query === "" ? "Registry" : `Search · ${data.query}`));
-    const count = data.results.length;
     head.appendChild(
-        element(doc, "p", "gallery-count", `${count} ${count === 1 ? "facet" : "facets"}`),
+        element(doc, "p", "gallery-count", `${shown.length} ${shown.length === 1 ? "facet" : "facets"}`),
     );
     fragment.appendChild(head);
 
-    if (count === 0) {
-        fragment.appendChild(
+    const filters = element(doc, "div", "filters");
+    for (const entry of FILTERS) {
+        const on = state.filter === entry.key;
+        const node = button(doc, on ? "filter filter-on" : "filter", entry.label, () => actions.filter(entry.key));
+        node.setAttribute("aria-pressed", on ? "true" : "false");
+        filters.appendChild(node);
+    }
+    fragment.appendChild(filters);
+
+    if (shown.length === 0) {
+        const empty = element(doc, "div", "empty-state");
+        empty.appendChild(
             element(
                 doc,
                 "p",
                 "empty",
-                data.query === ""
-                    ? "The registry returned no facets."
-                    : `Nothing matched ${data.query}.`,
+                data.results.length === 0
+                    ? data.query === ""
+                        ? "The registry returned no facets."
+                        : `Nothing matched ${data.query}.`
+                    : "No facet in these results carries that.",
             ),
         );
+        if (data.results.length > 0) {
+            empty.appendChild(button(doc, "cta cta-lead", "Show everything", () => actions.filter("all")));
+        }
+        fragment.appendChild(empty);
         return fragment;
     }
 
     const list = element(doc, "div", "gallery");
-    for (const facet of data.results) {
-        list.appendChild(galleryCard(doc, facet));
+    for (const facet of shown) {
+        list.appendChild(galleryCard(doc, facet, state, actions));
     }
     fragment.appendChild(list);
     return fragment;
 }
 
-function galleryCard(doc: PanelDocument, facet: GalleryFacet): PanelElement {
-    const card = element(doc, "article", "card facet-card");
+const INSTALL_LABELS: Record<InstallState, string> = {
+    idle: "Install",
+    installing: "Installing…",
+    installed: "Installed",
+    failed: "Retry",
+};
+
+const INSTALL_CLASSES: Record<InstallState, string> = {
+    idle: "cta cta-lead",
+    installing: "cta cta-busy",
+    installed: "cta cta-done",
+    failed: "cta cta-failed",
+};
+
+function galleryCard(
+    doc: PanelDocument,
+    facet: GalleryFacet,
+    state: GalleryState,
+    actions: GalleryActions,
+): PanelElement {
+    const open = state.open === facet.name;
+    const card = element(doc, "article", open ? "card facet-card facet-card-open" : "card facet-card");
 
     const top = element(doc, "div", "facet-top");
-    top.appendChild(element(doc, "span", "facet-name", facet.name));
+    const heading = element(doc, "div", "facet-heading");
+    const name = button(doc, "facet-name", facet.name, () => actions.toggle(facet));
+    name.setAttribute("aria-expanded", open ? "true" : "false");
+    heading.appendChild(name);
     if (facet.version !== "") {
-        top.appendChild(element(doc, "span", "facet-version", facet.version));
+        heading.appendChild(element(doc, "span", "facet-version", facet.version));
     }
+    top.appendChild(heading);
+
+    const status = state.installs[facet.name] ?? "idle";
+    const install = button(doc, INSTALL_CLASSES[status], INSTALL_LABELS[status], () => actions.install(facet));
+    if (status === "installing" || status === "installed") {
+        install.setAttribute("disabled", "true");
+    }
+    top.appendChild(install);
     card.appendChild(top);
 
     if (facet.publisher !== "") {
@@ -535,6 +679,11 @@ function galleryCard(doc: PanelDocument, facet: GalleryFacet): PanelElement {
     }
     if (facet.description !== "") {
         card.appendChild(element(doc, "p", "facet-desc", facet.description));
+    }
+
+    const failure = state.errors[facet.name];
+    if (status === "failed" && failure !== undefined) {
+        card.appendChild(element(doc, "p", "facet-error", failure));
     }
 
     const foot = element(doc, "div", "facet-foot");
@@ -546,12 +695,163 @@ function galleryCard(doc: PanelDocument, facet: GalleryFacet): PanelElement {
         chips.appendChild(chip);
     }
     foot.appendChild(chips);
+    const meta = element(doc, "div", "facet-meta");
     if (facet.published !== "") {
-        foot.appendChild(element(doc, "span", "facet-date", facet.published));
+        meta.appendChild(element(doc, "span", "facet-date", facet.published));
     }
+    const toggle = button(
+        doc,
+        "facet-toggle",
+        open ? "Hide contents" : "What is inside",
+        () => actions.toggle(facet),
+    );
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    meta.appendChild(toggle);
+    foot.appendChild(meta);
     card.appendChild(foot);
 
+    if (open) {
+        card.appendChild(contentsBlock(doc, facet, state));
+    }
+
     return card;
+}
+
+function contentsBlock(doc: PanelDocument, facet: GalleryFacet, state: GalleryState): PanelElement {
+    const block = element(doc, "div", "facet-inside");
+    const assets = state.contents[facet.name];
+
+    if (state.loading[facet.name] === true) {
+        block.appendChild(element(doc, "p", "facet-loading", "Reading the manifest…"));
+        return block;
+    }
+    if (assets === undefined) {
+        block.appendChild(element(doc, "p", "facet-loading", "Nothing to show yet."));
+        return block;
+    }
+    if (assets.length === 0) {
+        block.appendChild(element(doc, "p", "facet-loading", "This facet lists no assets."));
+        return block;
+    }
+
+    for (const asset of assets) {
+        const row = element(doc, "div", "inside-row");
+        const marker = element(doc, "span", assetTypeClass(asset.type));
+        marker.appendChild(element(doc, "span", "dot"));
+        marker.appendChild(element(doc, "span", undefined, asset.type));
+        row.appendChild(marker);
+        row.appendChild(element(doc, "span", "inside-name", asset.name));
+        if (asset.detail !== "") {
+            row.appendChild(element(doc, "span", "inside-detail", asset.detail));
+        }
+        block.appendChild(row);
+    }
+    return block;
+}
+
+// ---------------------------------------------------------------------------
+// The controller
+// ---------------------------------------------------------------------------
+
+/** The two tool calls the gallery makes on its own behalf. */
+export interface GalleryPorts {
+    install(facet: GalleryFacet): Promise<{ ok: boolean; message?: string }>;
+    contents(facet: GalleryFacet): Promise<GalleryAsset[]>;
+}
+
+/**
+ * Owns the gallery's state and redraws the container whenever it changes.
+ *
+ * The ports are the only way out to the host, which is what lets a test drive a
+ * real click through a real render with no browser in sight.
+ */
+export class GalleryController {
+    private state: GalleryState = emptyGalleryState();
+
+    constructor(
+        private readonly container: PanelElement,
+        private readonly ports: GalleryPorts,
+        private readonly doc: PanelDocument,
+        private data: GalleryData = { query: "", results: [] },
+    ) {}
+
+    /** Replaces the result set — a fresh browse resets what was on screen. */
+    show(data: GalleryData): void {
+        this.data = data;
+        this.state = emptyGalleryState();
+        this.render();
+    }
+
+    /** The state a test wants to assert on. */
+    snapshot(): GalleryState {
+        return this.state;
+    }
+
+    render(): void {
+        const actions: GalleryActions = {
+            filter: type => {
+                this.state = { ...this.state, filter: type };
+                this.render();
+            },
+            toggle: facet => void this.toggle(facet),
+            install: facet => void this.install(facet),
+        };
+        this.container.textContent = "";
+        this.container.appendChild(renderGallery(this.data, this.state, actions, this.doc));
+    }
+
+    private async toggle(facet: GalleryFacet): Promise<void> {
+        if (this.state.open === facet.name) {
+            this.state = { ...this.state, open: null };
+            this.render();
+            return;
+        }
+        this.state = { ...this.state, open: facet.name };
+        if (this.state.contents[facet.name] !== undefined) {
+            this.render();
+            return;
+        }
+        this.state = { ...this.state, loading: { ...this.state.loading, [facet.name]: true } };
+        this.render();
+        try {
+            const assets = await this.ports.contents(facet);
+            this.state = { ...this.state, contents: { ...this.state.contents, [facet.name]: assets } };
+        } catch {
+            // An unreadable manifest shows as an empty list rather than a stuck spinner.
+            this.state = { ...this.state, contents: { ...this.state.contents, [facet.name]: [] } };
+        }
+        this.state = { ...this.state, loading: { ...this.state.loading, [facet.name]: false } };
+        this.render();
+    }
+
+    private async install(facet: GalleryFacet): Promise<void> {
+        const current = this.state.installs[facet.name] ?? "idle";
+        if (current === "installing" || current === "installed") {
+            return;
+        }
+        this.setInstall(facet.name, "installing");
+        try {
+            const outcome = await this.ports.install(facet);
+            if (outcome.ok) {
+                this.setInstall(facet.name, "installed");
+            } else {
+                this.setInstall(facet.name, "failed", outcome.message ?? "The install did not complete.");
+            }
+        } catch (error) {
+            this.setInstall(facet.name, "failed", error instanceof Error ? error.message : String(error));
+        }
+    }
+
+    private setInstall(name: string, status: InstallState, message?: string): void {
+        const errors = { ...this.state.errors };
+        if (message === undefined) {
+            delete errors[name];
+        } else {
+            errors[name] = message;
+        }
+        this.state = { ...this.state, installs: { ...this.state.installs, [name]: status }, errors };
+        this.render();
+    }
 }
 
 /** Swaps the container's contents for a freshly rendered card. */
@@ -592,10 +892,40 @@ export async function bootstrap(): Promise<App | undefined> {
         return undefined;
     }
 
-    const app = new App({ name: "facet-studio-panel", version: "0.3.0" });
+    const app = new App({ name: "facet-studio-panel", version: "0.4.0" });
+
+    // The gallery's two calls back into the server. Install runs the same
+    // `facet_add` a person would run by hand, so the panel is driving the real
+    // lifecycle rather than pretending.
+    const controller = new GalleryController(
+        container,
+        {
+            install: async facet => {
+                const result = await app.callServerTool({
+                    name: "facet_add",
+                    arguments: { source: facet.name },
+                });
+                const failed = (result as { isError?: boolean }).isError === true;
+                return { ok: !failed, message: failed ? firstText(result) : undefined };
+            },
+            contents: async facet => {
+                const result = await app.callServerTool({
+                    name: "facet_contents",
+                    arguments: { name: facet.name, version: facet.version },
+                });
+                return toContentAssets(result) ?? [];
+            },
+        },
+        doc,
+    );
 
     // Handlers go on before connect, or the first notification can slip past.
     app.ontoolresult = result => {
+        const gallery = toGalleryData(result);
+        if (gallery !== undefined) {
+            controller.show(gallery);
+            return;
+        }
         const toolName = app.getHostContext()?.toolInfo?.tool.name;
         mount(container, toPanelData(result, { operation: toolName ?? "Result" }), doc);
     };
@@ -612,6 +942,12 @@ export async function bootstrap(): Promise<App | undefined> {
         applyDocumentTheme(theme);
     }
     return app;
+}
+
+/** The first readable line of a tool result, for an error message. */
+function firstText(result: unknown): string | undefined {
+    const parts = textParts(asRecord(result).content);
+    return parts.length > 0 ? parts[0] : undefined;
 }
 
 // Self-start in a browser; stay inert everywhere else (tests, the MCP server).

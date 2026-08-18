@@ -12,7 +12,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { browse, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT } from "./browse.js";
-import { renderResult, toGalleryData, type PanelDocument, type PanelElement } from "./view/panel.js";
+import {
+    GalleryController,
+    renderResult,
+    toContentAssets,
+    toGalleryData,
+    type GalleryAsset,
+    type GalleryFacet,
+    type PanelDocument,
+    type PanelElement,
+} from "./view/panel.js";
 
 /** A response shaped exactly like the registry's, captured from the live API. */
 const REGISTRY_RESPONSE = {
@@ -150,7 +159,11 @@ class Element extends Node {
         this.children.push(child);
         return child;
     }
-    setAttribute(): void {}
+    attrs = new Map<string, string>();
+    handlers: (() => void)[] = [];
+    setAttribute(k: string, v: string): void { this.attrs.set(k, v); }
+    addEventListener(_type: string, handler: () => void): void { this.handlers.push(handler); }
+    click(): void { for (const h of this.handlers) h(); }
     get textContent(): string {
         return text(this);
     }
@@ -196,11 +209,44 @@ function classes(node: Node): string[] {
     return found;
 }
 
+/** Every element in the tree whose rendered text equals `label`. */
+function buttonsLabelled(node: Node, label: string): Element[] {
+    const found: Element[] = [];
+    const visit = (c: Node): void => {
+        if (c instanceof Element) {
+            if (c.tag === "button" && text(c).trim() === label) found.push(c);
+            c.children.forEach(visit);
+        } else if (c instanceof Fragment) {
+            c.children.forEach(visit);
+        }
+    };
+    visit(node);
+    return found;
+}
+
 const testDocument: PanelDocument = {
     createElement: tag => new Element(tag) as unknown as PanelElement,
     createTextNode: data => new Text(data),
     createDocumentFragment: () => new Fragment(),
 };
+
+function facetFixture(): GalleryFacet {
+    return {
+        name: "worktrunk",
+        version: "0.1.0",
+        description: "Worktrunk-first git-worktree guidance for coding agents.",
+        publisher: "julian",
+        published: "Jul 29",
+        counts: [
+            { type: "skill", label: "1 Skill" },
+            { type: "command", label: "1 Command" },
+        ],
+    };
+}
+
+function idlePorts(): { install: () => Promise<{ ok: boolean }>; contents: () => Promise<GalleryAsset[]> } {
+    return { install: async () => ({ ok: true }), contents: async () => [] };
+}
 
 describe("browse end to end, tool result straight into the panel", () => {
     test("what the tool returns is what the gallery draws", async () => {
@@ -213,14 +259,15 @@ describe("browse end to end, tool result straight into the panel", () => {
 
         const result = await client.callTool({ name: "facet_browse", arguments: { query: "coding" } });
 
-        // Nothing is hand-written from here down: the renderer is handed the tool
-        // result verbatim, exactly as the view script hands it over in the host.
+        // Nothing is hand-written from here down: the controller is handed the
+        // tool result verbatim, exactly as the view script hands it over.
         const gallery = toGalleryData(result);
         expect(gallery).toBeDefined();
-        expect(gallery?.results).toHaveLength(2);
 
-        const rendered = renderResult(result, testDocument) as unknown as Node;
-        const drawn = text(rendered);
+        const root = new Element("main");
+        const controller = new GalleryController(root as unknown as PanelElement, idlePorts(), testDocument);
+        controller.show(gallery!);
+        const drawn = text(root);
 
         expect(drawn).toContain("worktrunk");
         expect(drawn).toContain("Worktrunk-first git-worktree guidance for coding agents.");
@@ -229,17 +276,146 @@ describe("browse end to end, tool result straight into the panel", () => {
         expect(drawn).toContain("1 Command");
         expect(drawn).toContain("Jul 29");
         expect(drawn).toContain("graphite");
-        // The card renderer's placeholder must never appear on a browse result.
         expect(drawn).not.toContain("Unknown facet");
-        expect(drawn).not.toContain("No assets reported.");
 
-        // Chips must carry a real asset-type class, or every count renders grey.
-        const drawnClasses = classes(rendered);
+        const drawnClasses = classes(root);
         expect(drawnClasses).toContain("chip type-skill");
         expect(drawnClasses).toContain("chip type-command");
         expect(drawnClasses).not.toContain("chip type-unknown");
 
         await client.close();
+    });
+
+    test("clicking Install runs the tool and the button follows it through", async () => {
+        const asked: GalleryFacet[] = [];
+        const root = new Element("main");
+        const controller = new GalleryController(
+            root as unknown as PanelElement,
+            {
+                install: async facet => {
+                    asked.push(facet);
+                    return { ok: true };
+                },
+                contents: async () => [],
+            },
+            testDocument,
+        );
+        controller.show({ query: "", results: [facetFixture()] });
+
+        expect(text(root)).toContain("Install");
+        buttonsLabelled(root, "Install")[0].click();
+        await Bun.sleep(0);
+
+        expect(asked.map(f => f.name)).toEqual(["worktrunk"]);
+        expect(controller.snapshot().installs.worktrunk).toBe("installed");
+        expect(text(root)).toContain("Installed");
+        // A finished install must not still offer to start another one.
+        expect(buttonsLabelled(root, "Install")).toHaveLength(0);
+    });
+
+    test("a failed install says why and offers a retry", async () => {
+        const root = new Element("main");
+        const controller = new GalleryController(
+            root as unknown as PanelElement,
+            {
+                install: async () => ({ ok: false, message: "No adapter is installed." }),
+                contents: async () => [],
+            },
+            testDocument,
+        );
+        controller.show({ query: "", results: [facetFixture()] });
+
+        buttonsLabelled(root, "Install")[0].click();
+        await Bun.sleep(0);
+
+        expect(controller.snapshot().installs.worktrunk).toBe("failed");
+        expect(text(root)).toContain("No adapter is installed.");
+        expect(buttonsLabelled(root, "Retry")).toHaveLength(1);
+    });
+
+    test("expanding a card fetches what is inside it, through the real tool", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, {
+            fetchFacets: async () => ({
+                name: "worktrunk",
+                version: "0.1.0",
+                manifest_json: JSON.stringify({
+                    skills: { "using-worktrunk": { description: "Route worktree work through wt." } },
+                    commands: { "/wt-new": { description: "Make a worktree." } },
+                }),
+            }),
+        });
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const root = new Element("main");
+        const controller = new GalleryController(
+            root as unknown as PanelElement,
+            {
+                install: async () => ({ ok: true }),
+                // Exactly what bootstrap does: call the tool, read its assets.
+                contents: async facet => {
+                    const r = await client.callTool({
+                        name: "facet_contents",
+                        arguments: { name: facet.name, version: facet.version },
+                    });
+                    return toContentAssets(r) ?? [];
+                },
+            },
+            testDocument,
+        );
+        controller.show({ query: "", results: [facetFixture()] });
+
+        buttonsLabelled(root, "What is inside")[0].click();
+        await Bun.sleep(5);
+
+        const drawn = text(root);
+        expect(drawn).toContain("using-worktrunk");
+        expect(drawn).toContain("Route worktree work through wt.");
+        expect(drawn).toContain("/wt-new");
+        expect(buttonsLabelled(root, "Hide contents")).toHaveLength(1);
+
+        await client.close();
+    });
+
+    test("filtering narrows the list and can be cleared", () => {
+        const root = new Element("main");
+        const controller = new GalleryController(root as unknown as PanelElement, idlePorts(), testDocument);
+        controller.show({
+            query: "",
+            results: [
+                facetFixture(),
+                {
+                    name: "agentic",
+                    version: "1.0.0",
+                    description: "Has an agent.",
+                    publisher: "julian",
+                    published: "Jul 1",
+                    counts: [{ type: "agent", label: "1 Agent" }],
+                },
+            ],
+        });
+        expect(text(root)).toContain("worktrunk");
+        expect(text(root)).toContain("agentic");
+
+        buttonsLabelled(root, "Agents")[0].click();
+        expect(text(root)).toContain("agentic");
+        expect(text(root)).not.toContain("worktrunk");
+
+        buttonsLabelled(root, "Everything")[0].click();
+        expect(text(root)).toContain("worktrunk");
+    });
+
+    test("filtering to nothing offers a way back rather than a blank panel", () => {
+        const root = new Element("main");
+        const controller = new GalleryController(root as unknown as PanelElement, idlePorts(), testDocument);
+        controller.show({ query: "", results: [facetFixture()] });
+
+        buttonsLabelled(root, "MCP")[0].click();
+        expect(text(root)).toContain("No facet in these results carries that.");
+        buttonsLabelled(root, "Show everything")[0].click();
+        expect(text(root)).toContain("worktrunk");
     });
 
     test("a registry that is down produces an error, not an empty gallery", async () => {
@@ -275,8 +451,10 @@ describe("browse end to end, tool result straight into the panel", () => {
         await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
 
         const result = await client.callTool({ name: "facet_browse", arguments: { query: "zzz" } });
-        const drawn = text(renderResult(result, testDocument) as unknown as Node);
-        expect(drawn).toContain("Nothing matched zzz.");
+        const root = new Element("main");
+        const controller = new GalleryController(root as unknown as PanelElement, idlePorts(), testDocument);
+        controller.show(toGalleryData(result)!);
+        expect(text(root)).toContain("Nothing matched zzz.");
 
         await client.close();
     });
