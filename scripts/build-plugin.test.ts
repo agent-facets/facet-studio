@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSafeOutDir, buildPlugin } from "./build-plugin.ts";
+import { OUTPUT_MARKER, assertSafeOutDir, buildPlugin } from "./build-plugin.ts";
 
 const cleanupDirs: string[] = [];
 
@@ -233,12 +233,28 @@ describe("buildPlugin", () => {
   test("outDir is wiped before writing (stale files from a previous build do not survive)", async () => {
     const src = await writeFixtureFacet();
     const out = await tempDir();
+
+    // Build once so the directory is genuinely a previous output - that is what
+    // earns it the right to be wiped - then leave junk behind in it.
+    await buildPlugin(src, out);
     await mkdir(join(out, "stale-dir"), { recursive: true });
     await Bun.write(join(out, "stale-dir", "leftover.txt"), "should be gone");
 
     await buildPlugin(src, out);
 
     expect(await Bun.file(join(out, "stale-dir", "leftover.txt")).exists()).toBe(false);
+    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
+  });
+
+  test("every build leaves its marker at the top of the output", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    const marker = Bun.file(join(out, OUTPUT_MARKER));
+    expect(await marker.exists()).toBe(true);
+    expect(await marker.text()).toContain("build-plugin");
+    expect(await walk(out)).toContain(OUTPUT_MARKER);
   });
 
   test("generator never touches the source tree", async () => {
@@ -451,13 +467,154 @@ describe("buildPlugin refuses dangerous output directories", () => {
         m.skills = { "../../victim": { description: "traverses out of the source tree" } };
       },
     });
+    // A directory the generator is allowed to wipe (it carries the marker), so
+    // the only thing standing between keep.txt and deletion is the manifest
+    // being validated first.
     const out = await tempDir();
+    await Bun.write(join(out, OUTPUT_MARKER), "generated\n");
     await Bun.write(join(out, "keep.txt"), "still here");
 
     await expect(buildPlugin(src, out)).rejects.toThrow("asset names");
 
     // Proof the manifest is validated before the wipe, not after it.
     expect(await Bun.file(join(out, "keep.txt")).text()).toBe("still here");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The nested-output hazard: an output directory can sit inside the source tree
+// without being the source tree, and the name-based guards above see nothing
+// wrong with it. `--out skills` used to delete every skill in the facet. What
+// saves it is what the target already holds, not where it sits.
+// ---------------------------------------------------------------------------
+
+describe("buildPlugin refuses an output directory that holds files it did not generate", () => {
+  test("a source directory nested inside the facet is refused and its contents survive", async () => {
+    const src = await writeFixtureFacet();
+    const before = await walk(src);
+    const skillBytes = await Bun.file(join(src, "skills", "using-facets", "reference.txt")).arrayBuffer();
+
+    // The exact repro: `bun scripts/build-plugin.ts --out skills` from the
+    // facet root. Nothing here points anywhere but a throwaway temp fixture.
+    await expect(buildPlugin(src, join(src, "skills"))).rejects.toThrow(
+      "already holds files this build did not generate",
+    );
+
+    expect(await walk(src)).toEqual(before);
+    const after = await Bun.file(join(src, "skills", "using-facets", "reference.txt")).arrayBuffer();
+    expect(Buffer.from(after).equals(Buffer.from(skillBytes))).toBe(true);
+  });
+
+  test("every other directory in the source tree is refused too", async () => {
+    const src = await writeFixtureFacet();
+    for (const nested of ["agents", "commands", join("skills", "using-facets")]) {
+      const before = await walk(src);
+      await expect(buildPlugin(src, join(src, nested))).rejects.toThrow("refusing to build into");
+      expect(await walk(src)).toEqual(before);
+    }
+  });
+
+  test("a non-empty unrelated directory is refused, contents intact", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await mkdir(join(out, "notes"), { recursive: true });
+    await Bun.write(join(out, "notes", "todo.md"), VICTIM_BYTES);
+    await Bun.write(join(out, "photo.jpg"), VICTIM_BYTES);
+
+    await expect(buildPlugin(src, out)).rejects.toThrow(
+      "already holds files this build did not generate",
+    );
+
+    expect(await walk(out).then((f) => f.sort())).toEqual([join("notes", "todo.md"), "photo.jpg"].sort());
+    expect(await Bun.file(join(out, "notes", "todo.md")).text()).toBe(VICTIM_BYTES);
+  });
+
+  test("an existing file at the output path is refused rather than deleted", async () => {
+    const src = await writeFixtureFacet();
+    const out = join(await tempDir(), "not-a-dir");
+    await Bun.write(out, VICTIM_BYTES);
+
+    await expect(buildPlugin(src, out)).rejects.toThrow("it is not a directory");
+
+    expect(await Bun.file(out).text()).toBe(VICTIM_BYTES);
+  });
+
+  test("a path that does not exist yet is allowed", async () => {
+    const src = await writeFixtureFacet();
+    const out = join(await tempDir(), "deep", "fresh-output");
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
+  });
+
+  test("an existing empty directory is allowed", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
+  });
+
+  test("the marker makes a directory wipeable no matter what else is in it", async () => {
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await Bun.write(join(out, OUTPUT_MARKER), "generated\n");
+    await Bun.write(join(out, "anything-at-all.txt"), "from an older build");
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "anything-at-all.txt")).exists()).toBe(false);
+    expect(await Bun.file(join(out, OUTPUT_MARKER)).exists()).toBe(true);
+  });
+
+  test("a plugin directory built before markers existed is still wipeable", async () => {
+    // What the committed plugin/ looks like: everything at the top level is
+    // something this generator emits, and there is a plugin manifest - but no
+    // marker, because it predates one.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await Bun.write(join(out, ".claude-plugin", "plugin.json"), '{"name":"old"}');
+    await Bun.write(join(out, "skills", "old-skill", "SKILL.md"), "old\n");
+    await Bun.write(join(out, "agents", "old.md"), "old\n");
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "skills", "old-skill", "SKILL.md")).exists()).toBe(false);
+    expect(await Bun.file(join(out, OUTPUT_MARKER)).exists()).toBe(true);
+  });
+
+  test("that grandfather clause needs a plugin manifest, not just familiar names", async () => {
+    // A source tree that happens to use the same directory names is not one of
+    // ours: no manifest, no marker, no deletion.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await Bun.write(join(out, "skills", "mine", "SKILL.md"), VICTIM_BYTES);
+
+    await expect(buildPlugin(src, out)).rejects.toThrow("already holds files this build did not generate");
+
+    expect(await Bun.file(join(out, "skills", "mine", "SKILL.md")).text()).toBe(VICTIM_BYTES);
+  });
+
+  test("refusal happens before the wipe, so a second build stays deterministic", async () => {
+    const src = await writeFixtureFacet();
+    const out1 = await tempDir();
+    const out2 = await tempDir();
+
+    // Build, build again over the top (marker present), and compare against a
+    // pristine build: rebuilding in place must produce the same bytes.
+    await buildPlugin(src, out1);
+    await buildPlugin(src, out1);
+    await buildPlugin(src, out2);
+
+    const files1 = await walk(out1);
+    expect(files1).toEqual(await walk(out2));
+    for (const rel of files1) {
+      const b1 = await Bun.file(join(out1, rel)).arrayBuffer();
+      const b2 = await Bun.file(join(out2, rel)).arrayBuffer();
+      expect(Buffer.from(b1).equals(Buffer.from(b2))).toBe(true);
+    }
   });
 });
 
