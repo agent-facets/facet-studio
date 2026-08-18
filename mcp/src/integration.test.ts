@@ -17,10 +17,28 @@ import { describe, expect, test } from "bun:test";
 import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
-import { VIEW_SCRIPT_BANNER, createServer } from "./server.js";
+import type { CallToolResult, ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import path from "node:path";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+    VIEW_SCRIPT_BANNER,
+    createServer,
+    registerAll,
+    type RegistrationDeps,
+    type RegistrationFailure,
+} from "./server.js";
 import { TOOL_SPECS } from "./tools.js";
-import { PANEL_CONTAINER_ID, PANEL_RESOURCE_URI, buildPanelHtml } from "./view/panel.js";
+import {
+    PANEL_CONTAINER_ID,
+    PANEL_RESOURCE_URI,
+    buildPanelHtml,
+    primeResourceListing,
+    renderResult,
+    type PanelDocument,
+    type PanelElement,
+    type PanelFragment,
+} from "./view/panel.js";
 
 /** A host that negotiated the MCP Apps UI extension. */
 const UI_CAPABLE: ClientCapabilities = { extensions: { [EXTENSION_ID]: {} } };
@@ -246,6 +264,295 @@ describe("the panel resource", () => {
             for (const spec of TOOL_SPECS) {
                 expect(byName.get(spec.name)?._meta?.ui).toBeUndefined();
             }
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The seam between a tool result and the card
+// ---------------------------------------------------------------------------
+//
+// Every other panel test writes its own payload, in the panel's own shape. That
+// is exactly why the card could go hollow — show "Unknown facet" for every real
+// call — with a green suite: the tests were agreeing with themselves.
+//
+// So nothing below authors a payload. A real client calls a real tool, the CLI
+// really runs, and whatever comes back is handed straight to the renderer. The
+// only things these tests know up front are the facet name they asked the CLI
+// to create and the tool titles the server published to the host — both of
+// which reach the card by a different route than the assertion does.
+
+/**
+ * Just enough DOM for the renderer to build a card in, and to read it back out
+ * of. There is no HTML parsing here; panel.test.ts is where the markup safety
+ * of the same renderer is proved.
+ */
+class CardNode {
+    className = "";
+    readonly children: CardNode[] = [];
+    private text = "";
+
+    constructor(readonly tag: string) {}
+
+    appendChild(child: CardNode): CardNode {
+        this.children.push(child);
+        return child;
+    }
+
+    setAttribute(): void {
+        // The header cells carry scope="col"; nothing here needs to read it.
+    }
+
+    get textContent(): string {
+        return this.children.length === 0 ? this.text : this.children.map(child => child.textContent).join("");
+    }
+
+    set textContent(value: string | null) {
+        this.children.length = 0;
+        this.text = value ?? "";
+    }
+}
+
+const cardDocument: PanelDocument = {
+    createElement: tag => new CardNode(tag) as unknown as PanelElement,
+    createTextNode: data => {
+        const node = new CardNode("#text");
+        node.textContent = data;
+        return node;
+    },
+    createDocumentFragment: () => new CardNode("#fragment") as unknown as PanelFragment,
+};
+
+/** Renders a tool result exactly the way the panel does when a host sends it. */
+function renderCard(result: unknown): CardNode {
+    return renderResult(result, cardDocument) as unknown as CardNode;
+}
+
+/** Every element carrying `className`, depth first. */
+function byClass(root: CardNode, className: string): CardNode[] {
+    const found = root.className.split(" ").includes(className) ? [root] : [];
+    return [...found, ...root.children.flatMap(child => byClass(child, className))];
+}
+
+/** The text of the first element carrying `className`. */
+function textAt(root: CardNode, className: string): string {
+    return byClass(root, className)[0]?.textContent ?? "";
+}
+
+/** The whole text payload the tool returned — the JSON envelope, verbatim. */
+function envelopeOf(result: CallToolResult): string {
+    return result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+/** The title the server published for a tool. The card's operation must match it. */
+async function publishedTitle(client: Client, name: string): Promise<string> {
+    const listed = await client.listTools();
+    const title = listed.tools.find(tool => tool.name === name)?.title;
+    expect(title).toBeDefined();
+    return String(title);
+}
+
+/**
+ * A scratch directory under the project root, always cleaned up.
+ *
+ * It has to live under the root because that is where the tools resolve a
+ * `directory` argument, and anything outside it is refused by design.
+ */
+async function withScratchDirectory(body: (directory: string) => Promise<void>): Promise<void> {
+    const directory = mkdtempSync(path.join(realpathSync(process.cwd()), ".facet-seam-"));
+    try {
+        await body(directory);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+}
+
+/** Nothing the card shows may be the raw envelope, and no field may be blank. */
+function expectNotHollow(card: CardNode, result: CallToolResult): void {
+    const whole = card.textContent;
+    expect(whole).not.toContain("Unknown facet");
+    expect(whole).not.toContain('{"ok":');
+    expect(whole).not.toContain('"ok"');
+    // Checked against the real payload rather than a guessed prefix, so no
+    // change to how the envelope is serialized can let a dump slip through.
+    expect(whole).not.toContain(envelopeOf(result));
+    expect(textAt(card, "facet")).not.toBe("");
+    expect(textAt(card, "operation")).not.toBe("");
+}
+
+describe("a real tool result, through the real renderer", () => {
+    test("facet_list fills the card in with this project's own identity", async () => {
+        await withHost(UI_CAPABLE, async client => {
+            const result = (await client.callTool({ name: "facet_list", arguments: {} })) as CallToolResult;
+            const card = renderCard(result);
+
+            // There is no facet.json beside these tests, so the CLI has no name
+            // to report and the run falls back to the project directory's own
+            // name. Still a true one — the card is never left saying nothing.
+            expect(textAt(card, "facet")).toBe(path.basename(realpathSync(process.cwd())));
+            expect(textAt(card, "operation")).toBe(await publishedTitle(client, "facet_list"));
+            expect(textAt(card, "status-text")).toBe("Succeeded");
+            expectNotHollow(card, result);
+        });
+    });
+
+    test("a facet the CLI really built shows its own name and its own assets", async () => {
+        await withHost(UI_CAPABLE, async client => {
+            await withScratchDirectory(async directory => {
+                const result = (await client.callTool({
+                    name: "facet_create",
+                    arguments: { name: "seam-probe", directory, skills: ["authoring"], agents: ["reviewer"] },
+                })) as CallToolResult;
+                expect(result.isError).toBeUndefined();
+
+                const card = renderCard(result);
+
+                // "seam-probe" went in as an argument and comes back through the
+                // CLI's own output. Nothing between the two was written by hand.
+                expect(textAt(card, "facet")).toBe("seam-probe");
+                expect(textAt(card, "operation")).toBe(await publishedTitle(client, "facet_create"));
+                expect(textAt(card, "status-text")).toBe("Succeeded");
+
+                // Real rows for the files the CLI actually wrote, typed and
+                // chipped — the part of the card that was empty before.
+                const names = byClass(card, "asset-name").map(cell => cell.textContent);
+                expect(names).toContain("authoring");
+                expect(names).toContain("reviewer");
+                expect(byClass(card, "type-skill").length).toBeGreaterThan(0);
+                expect(byClass(card, "type-agent").length).toBeGreaterThan(0);
+                expect(byClass(card, "empty")).toHaveLength(0);
+
+                expectNotHollow(card, result);
+            });
+        });
+    });
+
+    test("a failing call shows the CLI's own sentence, never the envelope", async () => {
+        await withHost(UI_CAPABLE, async client => {
+            await withScratchDirectory(async directory => {
+                // An empty directory is not a facet, so this really does fail.
+                const result = (await client.callTool({
+                    name: "facet_verify",
+                    arguments: { directory },
+                })) as CallToolResult;
+                expect(result.isError).toBe(true);
+
+                const card = renderCard(result);
+                expect(textAt(card, "status-text")).toBe("Failed");
+                expect(byClass(card, "status-error")).toHaveLength(1);
+
+                // The message is the CLI's: it appears word for word inside the
+                // payload the tool returned, and it is not that payload.
+                const message = textAt(card, "message");
+                expect(message).not.toBe("");
+                expect(envelopeOf(result)).toContain(message);
+                expect(message.trimStart().startsWith("{")).toBe(false);
+                expect(message).not.toContain('"code"');
+
+                expect(textAt(card, "empty")).toBe("No assets reported.");
+                expectNotHollow(card, result);
+            });
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// One registrar failing must not take the rest of the server with it
+// ---------------------------------------------------------------------------
+//
+// Registration happens inside `oninitialized`, where a throw has nowhere to go.
+// Before this was contained, one registrar blowing up meant every registrar
+// behind it silently never ran, and the host was handed a server missing half
+// its surface with nothing said about why.
+//
+// Making a registrar fail on purpose needs no stubs. The SDK refuses to add a
+// capability once a transport is attached, so a capability that was never
+// primed before connect is one whose registrar cannot succeed — which is how
+// each test below chooses its casualty.
+
+/** Primes the tools listing the way createServer does, so tool registration can work. */
+function primeTools(server: McpServer): void {
+    server.registerTool("probe", { description: "Removed immediately." }, () => ({ content: [] })).remove();
+}
+
+/** A UI-capable host's registration deps, reporting failures into `failures`. */
+function depsCollecting(failures: RegistrationFailure[]): RegistrationDeps {
+    return {
+        clientCapabilities: {},
+        uiCapability: {},
+        supportsUi: true,
+        onRegistrationError: failure => void failures.push(failure),
+    };
+}
+
+/** Connects a real client to a server built by hand, and always closes both ends. */
+async function withBareServer(server: McpServer, body: (client: Client) => Promise<void>): Promise<void> {
+    const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities: UI_CAPABLE });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+        await body(client);
+    } finally {
+        await client.close();
+        await server.close();
+    }
+}
+
+describe("registration failures", () => {
+    test("a registrar that fails does not stop the ones queued behind it", async () => {
+        const server = new McpServer({ name: "facet-studio", version: "0.2.0" });
+        // Resources primed, tools not: both tool registrars are doomed, and the
+        // panel — which runs last — is the one that can still succeed.
+        primeResourceListing(server);
+        const failures: RegistrationFailure[] = [];
+
+        await withBareServer(server, async client => {
+            registerAll(server, depsCollecting(failures));
+
+            expect(failures.map(failure => failure.registrar)).toEqual(["tools", "auth"]);
+            // The point of the whole exercise: the panel still ran.
+            const listed = await client.listResources();
+            expect(listed.resources.map(resource => resource.uri)).toContain(PANEL_RESOURCE_URI);
+        });
+    });
+
+    test("a failing registrar costs its own surface and nothing else", async () => {
+        const server = new McpServer({ name: "facet-studio", version: "0.2.0" });
+        // The mirror image: tools primed, resources not, so the panel is the
+        // casualty and every tool has to survive it.
+        primeTools(server);
+        const failures: RegistrationFailure[] = [];
+
+        await withBareServer(server, async client => {
+            registerAll(server, depsCollecting(failures));
+
+            expect(failures).toHaveLength(1);
+            expect(failures[0]?.registrar).toBe("panel");
+            expect(String(failures[0]?.error)).toContain("Cannot register capabilities after connecting");
+
+            const listed = await client.listTools();
+            expect(listed.tools.map(tool => tool.name)).toEqual([...EXPECTED_TOOLS]);
+        });
+    });
+
+    test("a seam that throws outright still leaves a live, reachable server", async () => {
+        const failures: RegistrationFailure[] = [];
+        const server = createServer({
+            registerAll: () => {
+                throw new Error("the seam exploded");
+            },
+            onRegistrationError: failure => void failures.push(failure),
+        });
+
+        await withBareServer(server, async client => {
+            // The handshake completed rather than tearing the connection down,
+            // and the host can still talk to what is there.
+            expect(client.getServerVersion()).toMatchObject({ name: "facet-studio" });
+            await expect(client.listTools()).resolves.toMatchObject({ tools: [] });
+
+            expect(failures).toHaveLength(1);
+            expect(failures[0]?.registrar).toBe("registration");
+            expect(String(failures[0]?.error)).toContain("the seam exploded");
         });
     });
 });

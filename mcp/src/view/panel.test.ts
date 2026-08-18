@@ -160,6 +160,20 @@ function countElements(html: string, selector: string): number {
     return count;
 }
 
+/** The text inside every `selector` element, in document order. */
+function textOfEach(html: string, selector: string): string[] {
+    const found: string[] = [];
+    new HTMLRewriter()
+        .on(selector, {
+            element: () => void found.push(""),
+            text: chunk => {
+                found[found.length - 1] += chunk.text;
+            },
+        })
+        .transform(html);
+    return found;
+}
+
 /** Every attribute name a real HTML parser finds in this markup. */
 function attributeNames(html: string): string[] {
     const names = new Set<string>();
@@ -202,6 +216,39 @@ const ERROR_RESULT = {
     content: [{ type: "text", text: "facet.json is malformed at line 3" }],
 };
 
+/**
+ * What a lifecycle tool writes into its text part.
+ *
+ * This is the payload, not the summary the card is drawn from. Normally both
+ * arrive and the summary wins; these cover the fallback, for a host or proxy
+ * that passes the text along and drops the structured content. The end-to-end
+ * check of the normal path lives in integration.test.ts, against a tool result
+ * nobody wrote by hand.
+ */
+const ENVELOPE_FAILURE = {
+    isError: true,
+    content: [
+        {
+            type: "text",
+            text: JSON.stringify(
+                { ok: false, error: { code: "cli_failed", message: "facet.json is malformed at line 3" } },
+                null,
+                2,
+            ),
+        },
+    ],
+};
+
+const ENVELOPE_SUCCESS = {
+    content: [{ type: "text", text: JSON.stringify({ ok: true, data: { name: "facet-studio" } }, null, 2) }],
+};
+
+/** What the sign-in tools return: prose, plus structured data that is not a card summary. */
+const AUTH_RESULT = {
+    structuredContent: { signedIn: false, mode: "fallback", registryUrl: "https://example.test" },
+    content: [{ type: "text", text: "facet studio · not signed in\n\nNo registry credential found." }],
+};
+
 const XSS_PAYLOAD = "<img src=x onerror=alert(1)>";
 
 // ---------------------------------------------------------------------------
@@ -232,6 +279,44 @@ describe("renderResult", () => {
         expect(byClass(tree, "status-text")[0]?.textContent).toBe("Failed");
         expect(byClass(tree, "message")[0]?.textContent).toBe("facet.json is malformed at line 3");
         // Nothing to list, and the card says so instead of showing an empty table.
+        expect(byClass(tree, "empty")[0]?.textContent).toBe("No assets reported.");
+    });
+
+    test("labels the asset columns the way the presentation skill does", () => {
+        // The skill mandates Type | Name | Description, and the card and the
+        // prose fallback have to describe a result with the same words.
+        expect(textOfEach(render(SUCCESS_RESULT).html, "table.assets thead th")).toEqual([
+            "Type",
+            "Name",
+            "Description",
+        ]);
+    });
+
+    test("reads the tools' own envelope when no card summary arrives", () => {
+        const failure = render(ENVELOPE_FAILURE);
+        expect(byClass(failure.tree, "status-text")[0]?.textContent).toBe("Failed");
+        expect(byClass(failure.tree, "message")[0]?.textContent).toBe("facet.json is malformed at line 3");
+
+        // `data` names the facet, so the card does too rather than shrugging.
+        const success = render(ENVELOPE_SUCCESS);
+        expect(byClass(success.tree, "facet")[0]?.textContent).toBe("facet-studio");
+        expect(byClass(success.tree, "status-text")[0]?.textContent).toBe("Succeeded");
+    });
+
+    test("never puts the payload dump on the card", () => {
+        // The failure this catches is the ugly one: a card whose message is a
+        // pretty-printed `{ "ok": false, ... }` instead of the CLI's sentence.
+        for (const result of [ENVELOPE_FAILURE, ENVELOPE_SUCCESS]) {
+            const text = rawText(render(result).tree);
+            expect(text).not.toContain('"ok"');
+            expect(text).not.toContain("{");
+        }
+    });
+
+    test("still renders the sign-in tools' results, which carry no card summary", () => {
+        const { tree } = render(AUTH_RESULT);
+        expect(byClass(tree, "status-text")[0]?.textContent).toBe("Succeeded");
+        expect(byClass(tree, "message")[0]?.textContent).toContain("No registry credential found.");
         expect(byClass(tree, "empty")[0]?.textContent).toBe("No assets reported.");
     });
 

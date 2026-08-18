@@ -133,37 +133,85 @@ function firstString(...candidates: unknown[]): string | undefined {
     return undefined;
 }
 
-/** The `text` parts of an MCP tool result's content array, joined. */
-function collectText(content: unknown): string | undefined {
+/** The `text` parts of an MCP tool result's content array, in order. */
+function textParts(content: unknown): string[] {
     if (!Array.isArray(content)) {
-        return undefined;
+        return [];
     }
-    const parts = content
+    return content
         .map(part => (isRecord(part) && part["type"] === "text" ? part["text"] : undefined))
         .filter((text): text is string => typeof text === "string");
+}
+
+/** The object this string spells out, if it spells out an object at all. */
+function asJsonObject(text: string): Record<string, unknown> | undefined {
+    try {
+        const parsed: unknown = JSON.parse(text);
+        return isRecord(parsed) ? parsed : undefined;
+    } catch {
+        // Plain prose, not a payload. Fine — it becomes the message instead.
+        return undefined;
+    }
+}
+
+/**
+ * The readable text of a result, joined.
+ *
+ * A part that parses as a JSON object is the payload, not prose, so it is left
+ * out. That is the whole point: the card has one line for the message and it
+ * has to read like a sentence, never like a dump of the result envelope. The
+ * lifecycle tools put their full payload in a text part alongside the summary,
+ * so without this rule a card that missed the summary would show that dump.
+ */
+function collectProse(content: unknown): string | undefined {
+    const parts = textParts(content).filter(text => asJsonObject(text) === undefined);
     return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
 /** The first text part that happens to be a JSON object. */
 function parseJsonContent(content: unknown): Record<string, unknown> | undefined {
-    if (!Array.isArray(content)) {
-        return undefined;
-    }
-    for (const part of content) {
-        const text = isRecord(part) && part["type"] === "text" ? part["text"] : undefined;
-        if (typeof text !== "string") {
-            continue;
-        }
-        try {
-            const parsed: unknown = JSON.parse(text);
-            if (isRecord(parsed)) {
-                return parsed;
-            }
-        } catch {
-            // Plain prose, not a payload. Fine — it becomes the message instead.
+    for (const text of textParts(content)) {
+        const parsed = asJsonObject(text);
+        if (parsed !== undefined) {
+            return parsed;
         }
     }
     return undefined;
+}
+
+/** What a tool's text payload turned out to be saying. */
+interface Outcome {
+    /** The payload's own fields, when it carried a usable one. */
+    fields?: Record<string, unknown>;
+    /** The failure sentence, in the CLI's words. */
+    message?: string;
+    /** True only when the payload said outright that the run failed. */
+    failed: boolean;
+}
+
+/**
+ * Unwraps the `{ ok: true, data } | { ok: false, error }` envelope the lifecycle
+ * tools write into their text part.
+ *
+ * This is the fallback path — normally the summary in `structuredContent` says
+ * everything the card needs. It matters when that summary doesn't arrive (an
+ * older build, a host or proxy that drops it), because without unwrapping, the
+ * only thing left to show would be the serialized envelope itself.
+ */
+function readOutcome(payload: Record<string, unknown> | undefined): Outcome {
+    if (payload === undefined) {
+        return { failed: false };
+    }
+    if (typeof payload["ok"] !== "boolean") {
+        // Not the envelope — some other payload object. Read it as it stands.
+        return { fields: payload, failed: false };
+    }
+    if (payload["ok"] === true) {
+        const data = payload["data"];
+        return { ...(isRecord(data) ? { fields: data } : {}), failed: false };
+    }
+    const message = firstString(asRecord(payload["error"])["message"]);
+    return { ...(message === undefined ? {} : { message }), failed: true };
 }
 
 const STATUS_ALIASES: Record<string, PanelStatus> = {
@@ -179,16 +227,14 @@ const STATUS_ALIASES: Record<string, PanelStatus> = {
     "in-progress": "pending",
 };
 
-function readStatus(source: Record<string, unknown>, top: Record<string, unknown>): PanelStatus {
-    const raw = firstString(source["status"], source["state"]);
+/** The status the fields name, or failing that, whatever the result implied. */
+function readStatus(fields: Record<string, unknown>, failed: boolean): PanelStatus {
+    const raw = firstString(fields["status"], fields["state"]);
     const alias = raw === undefined ? undefined : STATUS_ALIASES[raw.trim().toLowerCase()];
     if (alias !== undefined) {
         return alias;
     }
-    if (top["isError"] === true || source["ok"] === false || source["success"] === false) {
-        return "error";
-    }
-    return "success";
+    return failed ? "error" : "success";
 }
 
 function readAssets(value: unknown): PanelAsset[] {
@@ -220,27 +266,38 @@ function readAssets(value: unknown): PanelAsset[] {
  * type-checked before it is kept, and unusable input yields a sane empty card
  * rather than an exception.
  *
+ * There are three places a fact can come from, and they are tried in that
+ * order. First `structuredContent`, which is where the tools put the summary
+ * written for exactly this card — facet, operation, status, message, assets.
+ * Then the text payload, unwrapped from its `{ ok, ... }` envelope. Last, the
+ * plain prose of the result, which is all the auth tools send.
+ *
  * Running this over an already-normalized {@link PanelData} leaves it unchanged,
  * so callers can hand it either shape.
  */
 export function toPanelData(value: unknown, defaults: PanelDefaults = {}): PanelData {
     const top = asRecord(value);
     const structured = top["structuredContent"];
-    const source = isRecord(structured) ? structured : (parseJsonContent(top["content"]) ?? top);
+    const outcome = readOutcome(parseJsonContent(top["content"]));
+    const fields = isRecord(structured) ? structured : (outcome.fields ?? top);
 
     const message = firstString(
-        source["message"],
-        source["error"],
-        source["summary"],
-        collectText(top["content"]),
+        fields["message"],
+        fields["error"],
+        fields["summary"],
+        outcome.message,
+        collectProse(top["content"]),
     );
 
+    const failed =
+        top["isError"] === true || outcome.failed || fields["ok"] === false || fields["success"] === false;
+
     return {
-        facet: firstString(source["facet"], source["name"], defaults.facet) ?? "Unknown facet",
-        operation: firstString(source["operation"], source["tool"], defaults.operation) ?? "Result",
-        status: readStatus(source, top),
+        facet: firstString(fields["facet"], fields["name"], defaults.facet) ?? "Unknown facet",
+        operation: firstString(fields["operation"], fields["tool"], defaults.operation) ?? "Result",
+        status: readStatus(fields, failed),
         ...(message === undefined ? {} : { message }),
-        assets: readAssets(source["assets"]),
+        assets: readAssets(fields["assets"]),
     };
 }
 
@@ -285,7 +342,9 @@ function assetTable(doc: PanelDocument, assets: PanelAsset[]): PanelElement {
 
     const head = element(doc, "thead");
     const headRow = element(doc, "tr");
-    for (const label of ["Type", "Name", "Detail"]) {
+    // The three headers the presentation skill mandates, word for word, so the
+    // card and the prose fallback describe a result the same way.
+    for (const label of ["Type", "Name", "Description"]) {
         headRow.appendChild(headerCell(doc, label));
     }
     head.appendChild(headRow);

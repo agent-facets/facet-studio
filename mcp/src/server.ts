@@ -62,6 +62,18 @@ export interface StudioServerDeps {
      * {@link registerAll}; tests use it to watch what the seam is handed.
      */
     registerAll?: RegisterAll;
+    /**
+     * Told about a registrar that threw, so a host or a test can see it.
+     * Defaults to a line on stderr.
+     */
+    onRegistrationError?: (failure: RegistrationFailure) => void;
+}
+
+/** A registrar that threw, and which one it was. */
+export interface RegistrationFailure {
+    /** "tools", "auth", "panel", or "registration" for the seam as a whole. */
+    registrar: string;
+    error: unknown;
 }
 
 /**
@@ -78,16 +90,42 @@ export interface RegistrationDeps extends StudioServerDeps {
 export type RegisterAll = (server: McpServer, deps: RegistrationDeps) => void;
 
 /**
+ * Runs one registrar and keeps its failure to itself, handing the failure back
+ * instead of throwing it.
+ *
+ * That is the whole job. All of this runs inside `oninitialized`, where a throw
+ * has nowhere to go: it would abandon every registrar queued behind it and
+ * leave the host talking to a server that is missing half its surface, with
+ * nothing said about why.
+ */
+function contain(registrar: string, run: () => void): RegistrationFailure | undefined {
+    try {
+        run();
+        return undefined;
+    } catch (error) {
+        return { registrar, error };
+    }
+}
+
+/** Where a registration failure goes when the caller supplied no handler. */
+function reportRegistrationFailure({ registrar, error }: RegistrationFailure): void {
+    // stdout is the protocol channel, so diagnostics go to stderr.
+    console.error(`facet-studio: the ${registrar} registrar failed; serving without it:`, error);
+}
+
+/**
  * The one place tools, panels, and auth register themselves.
  *
  * It runs once per connection, right after the handshake, which is why `deps`
  * carries the host's capabilities: registration can differ between a host that
  * renders UI and one that doesn't.
  *
- * The order matters, and not for the reason you'd guess. This runs inside the
- * `oninitialized` callback, where nobody catches a throw — so if one registrar
- * blew up, every registrar after it would silently never run and the host would
- * see a half-empty server. The panel is the only one that touches resources
+ * Each registrar runs inside {@link contain}, so one of them blowing up costs
+ * the host that one piece of the surface rather than every piece registered
+ * after it. Whatever failed is reported — a server quietly missing its tools is
+ * the expensive version of this bug.
+ *
+ * The order still matters. The panel is the only one that touches resources
  * (the riskier registration, since resource capabilities have to be primed
  * before connect), so it goes last: the tools are already published by then.
  * The order also fixes what `tools/list` returns — the nine lifecycle tools in
@@ -97,9 +135,24 @@ export type RegisterAll = (server: McpServer, deps: RegistrationDeps) => void;
  * the host loads is inert markup: no bootstrap, no `ontoolresult`, no card.
  */
 export function registerAll(server: McpServer, deps: RegistrationDeps): void {
-    registerTools(server, deps);
-    registerAuth(server, deps);
-    registerPanel(server, deps, { viewScript: VIEW_SCRIPT });
+    const failures = [
+        contain("tools", () => {
+            registerTools(server, deps);
+        }),
+        contain("auth", () => {
+            registerAuth(server, deps);
+        }),
+        contain("panel", () => {
+            registerPanel(server, deps, { viewScript: VIEW_SCRIPT });
+        }),
+    ];
+
+    const report = deps.onRegistrationError ?? reportRegistrationFailure;
+    for (const failure of failures) {
+        if (failure !== undefined) {
+            report(failure);
+        }
+    }
 }
 
 /**
@@ -119,15 +172,24 @@ export function createServer(deps: StudioServerDeps = {}): McpServer {
 
     // The host's capabilities only exist once it has answered the handshake, so
     // registration has to wait for this callback rather than run at build time.
+    //
+    // Nothing catches a throw from here — the SDK just loses it — so the seam is
+    // contained too, not only the registrars inside it. An injected seam, or the
+    // capability lookup itself, can fail just as easily as a registrar can.
     server.server.oninitialized = () => {
-        const clientCapabilities = server.server.getClientCapabilities();
-        const uiCapability = getUiCapability(clientCapabilities);
-        register(server, {
-            ...deps,
-            clientCapabilities,
-            uiCapability,
-            supportsUi: uiCapability !== undefined,
+        const failure = contain("registration", () => {
+            const clientCapabilities = server.server.getClientCapabilities();
+            const uiCapability = getUiCapability(clientCapabilities);
+            register(server, {
+                ...deps,
+                clientCapabilities,
+                uiCapability,
+                supportsUi: uiCapability !== undefined,
+            });
         });
+        if (failure !== undefined) {
+            (deps.onRegistrationError ?? reportRegistrationFailure)(failure);
+        }
     };
 
     return server;
