@@ -24,6 +24,8 @@ import { pathToFileURL } from "node:url";
 import { registerAuth } from "./auth.js";
 import { registerTools } from "./tools.js";
 import { registerBrowse } from "./browse.js";
+import { registerProject } from "./project.js";
+import { registerAuthoring } from "./authoring.js";
 import { primeResourceListing, registerPanel } from "./view/panel.js";
 
 // A Bun macro: this call runs while *this file* is being transpiled or bundled,
@@ -232,7 +234,8 @@ function refuseToServe(server: McpServer, failure: RegistrationFailure): void {
  * (the riskier registration, since resource capabilities have to be primed
  * before connect), so it goes last: the tools are already published by then.
  * The order also fixes what `tools/list` returns — the nine lifecycle tools in
- * spec-table order, then browse, then the two sign-in tools.
+ * spec-table order, then the registry reads, then the two project reads, then
+ * the two sign-in tools.
  *
  * The panel gets the compiled view script handed to it. Without it the page
  * the host loads is inert markup: no bootstrap, no `ontoolresult`, no card.
@@ -244,6 +247,12 @@ export function registerAll(server: McpServer, deps: RegistrationDeps): void {
         }),
         contain("browse", () => {
             registerBrowse(server, deps);
+        }),
+        contain("project", () => {
+            registerProject(server, deps);
+        }),
+        contain("authoring", () => {
+            registerAuthoring(server, deps);
         }),
         contain("auth", () => {
             registerAuth(server, deps);

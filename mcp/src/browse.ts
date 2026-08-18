@@ -172,6 +172,12 @@ const VersionMetadata = z.object({
     version: z.string().optional(),
     /** The facet's own manifest, verbatim, as a JSON string. */
     manifest_json: z.string().optional(),
+    description: z.string().optional(),
+    published_at: z.string().optional(),
+    publisher: z.string().optional(),
+    owner: z.object({ username: z.string().optional() }).partial().optional(),
+    asset_counts: z.record(z.string(), z.number()).optional(),
+    visibility: z.string().optional(),
 });
 
 /** The manifest sections that hold assets, in the order a card lists them. */
@@ -227,13 +233,32 @@ const contentsShape = {
 
 const contentsSchema = z.object(contentsShape);
 
+/**
+ * A facet name as a URL path.
+ *
+ * Two characters need care. The `@` of a scope stays literal, because the
+ * registry's routes match a literal `@` and a `%40` is only tolerated, never
+ * emitted on purpose. The `/` between scope and name stays a real separator,
+ * so each half is encoded on its own rather than the whole string at once.
+ */
+export function facetPath(name: string): string {
+    const slash = name.startsWith("@") ? name.indexOf("/") : -1;
+    if (slash === -1) {
+        return encodeURIComponent(name);
+    }
+    return `@${encodeURIComponent(name.slice(1, slash))}/${encodeURIComponent(name.slice(slash + 1))}`;
+}
+
+/** The registry's base URL for this call: the caller's, the env's, or the public one. */
+function baseUrl(deps: BrowseDeps): string {
+    const env = deps.env ?? process.env;
+    return stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
+}
+
 /** Reads one published version and lists what is inside it. */
 export async function contents(args: { name: string; version: string }, deps: BrowseDeps = {}): Promise<ContentsData> {
-    const env = deps.env ?? process.env;
-    const base = stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
-    const path = `${encodeURIComponent(args.name)}/${encodeURIComponent(args.version)}`;
-    // A scoped name carries a slash that must stay a path separator, not %2F.
-    const url = `${base}/v0/facets/${path.replace(/%40/g, "@").replace(/%2F/g, "/")}`;
+    const base = baseUrl(deps);
+    const url = `${base}/v0/facets/${facetPath(args.name)}/${encodeURIComponent(args.version)}`;
 
     const fetchFacets = deps.fetchFacets ?? defaultFetch;
     const parsed = VersionMetadata.parse(await fetchFacets(url));
@@ -255,6 +280,138 @@ export function contentsToText(data: ContentsData): string {
         asset.detail === "" ? `- ${asset.name} (${asset.type})` : `- ${asset.name} (${asset.type}) — ${asset.detail}`,
     );
     return [`Inside ${data.facet}@${data.version}:`, ...lines].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// One facet, at length
+// ---------------------------------------------------------------------------
+
+/** The structured payload the panel renders as the Detail screen. */
+export interface DetailData {
+    kind: "detail";
+    facet: string;
+    version: string;
+    description: string;
+    publisher: string;
+    published: string;
+    visibility: string;
+    counts: GalleryCount[];
+    assets: ContentAsset[];
+    /** Every published version, newest first. */
+    versions: string[];
+}
+
+const LatestVersion = z.object({ name: z.string().optional(), latest: z.string() });
+const VersionList = z.object({ versions: z.array(z.string()).default([]) });
+
+/** Which version to open the screen on, when the caller didn't say. */
+async function latestVersionOf(base: string, name: string, fetchFacets: FetchFacets): Promise<string> {
+    const parsed = LatestVersion.parse(await fetchFacets(`${base}/v0/facets/${facetPath(name)}/latest-version`));
+    return parsed.latest;
+}
+
+/**
+ * Everything one facet's detail screen shows, in as few round trips as it takes.
+ *
+ * The version list is fetched alongside the metadata rather than after it,
+ * because the two are independent and the screen wants both. A failing version
+ * list is not a failing screen: the list comes back empty and the Versions tab
+ * says so, which is better than losing the description and the asset list over
+ * it.
+ */
+export async function detail(args: { name: string; version?: string }, deps: BrowseDeps = {}): Promise<DetailData> {
+    const base = baseUrl(deps);
+    const fetchFacets = deps.fetchFacets ?? defaultFetch;
+    const version = args.version ?? (await latestVersionOf(base, args.name, fetchFacets));
+    const at = `${base}/v0/facets/${facetPath(args.name)}`;
+
+    const [metadata, versions] = await Promise.all([
+        fetchFacets(`${at}/${encodeURIComponent(version)}`).then(value => VersionMetadata.parse(value)),
+        fetchFacets(`${at}/versions/${encodeURIComponent(version)}`)
+            .then(value => VersionList.parse(value).versions)
+            .catch(() => [] as string[]),
+    ]);
+
+    return {
+        kind: "detail",
+        facet: metadata.name ?? args.name,
+        version: metadata.version ?? version,
+        description: metadata.description ?? "",
+        publisher: metadata.publisher ?? metadata.owner?.username ?? "",
+        published: shortDate(metadata.published_at),
+        visibility: metadata.visibility ?? "",
+        counts: toCounts(metadata.asset_counts),
+        assets: parseManifestAssets(metadata.manifest_json),
+        // The registry sorts ascending; a version history reads newest first.
+        versions: [...versions].reverse(),
+    };
+}
+
+/** The plain-text half of a detail result. */
+export function detailToText(data: DetailData): string {
+    const head = `${data.facet}@${data.version}${data.publisher === "" ? "" : ` · by ${data.publisher}`}`;
+    const counts = data.counts.map(count => count.label).join(", ");
+    const lines = data.assets.map(asset =>
+        asset.detail === "" ? `- ${asset.name} (${asset.type})` : `- ${asset.name} (${asset.type}) — ${asset.detail}`,
+    );
+    const versions =
+        data.versions.length === 0 ? [] : [`Versions: ${data.versions.slice(0, 10).join(", ")}`];
+    return [head, data.description, counts, ...lines, ...versions].filter(line => line !== "").join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// The README
+// ---------------------------------------------------------------------------
+
+/** The structured payload behind the README tab. */
+export interface ReadmeData {
+    kind: "readme";
+    facet: string;
+    version: string;
+    /** The file the text came from, e.g. `README.md`. Empty when there is none. */
+    file: string;
+    text: string;
+    /** True when the text was cut at {@link README_LIMIT}. */
+    truncated: boolean;
+}
+
+/** How much README the panel will show. Longer files are cut, not refused. */
+export const README_LIMIT = 24_000;
+
+/** A root-level README, by the same rule the registry's own detail page uses. */
+const ROOT_README = /^readme(\.[^.]+)?$/i;
+
+const ContentsFile = z.object({
+    kind: z.string().optional(),
+    path: z.string(),
+    content: z.string().optional(),
+});
+
+const ContentsResponse = z.object({ files: z.array(ContentsFile).default([]) });
+
+/**
+ * Fetches one version's README.
+ *
+ * This is the panel's own call, made when someone opens the tab, because the
+ * contents endpoint returns every text file in the facet and there is no reason
+ * to pay for that while drawing a card.
+ */
+export async function readme(args: { name: string; version: string }, deps: BrowseDeps = {}): Promise<ReadmeData> {
+    const base = baseUrl(deps);
+    const fetchFacets = deps.fetchFacets ?? defaultFetch;
+    const url = `${base}/v0/facets/${facetPath(args.name)}/${encodeURIComponent(args.version)}/contents`;
+    const parsed = ContentsResponse.parse(await fetchFacets(url));
+
+    const found = parsed.files.find(file => file.kind === "text" && ROOT_README.test(file.path));
+    const text = found?.content ?? "";
+    return {
+        kind: "readme",
+        facet: args.name,
+        version: args.version,
+        file: found?.path ?? "",
+        text: text.slice(0, README_LIMIT),
+        truncated: text.length > README_LIMIT,
+    };
 }
 
 const browseShape = {
@@ -350,6 +507,116 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
     }
 
     registerContents(server, deps);
+    registerDetail(server, deps);
+    registerReadme(server, deps);
+}
+
+const detailShape = {
+    name: z.string().trim().min(1).max(200).describe("Facet name, e.g. `graphite` or `@scope/name`."),
+    version: z.string().trim().min(1).max(64).optional().describe("Which version to open. Defaults to the latest."),
+};
+
+const detailSchema = z.object(detailShape);
+
+/**
+ * Registers `facet_detail`.
+ *
+ * The single-facet answer: what it does, who published it, what is inside it,
+ * and every version it has had. This is what a question about one named facet
+ * should reach for, rather than a search that happens to return it.
+ */
+function registerDetail(server: Pick<McpServer, "registerTool">, deps: BrowseDeps): void {
+    const config = {
+        title: "Facet detail",
+        description:
+            "Show everything about one published facet: its description, publisher, assets, and version history. " +
+            "Use this when someone asks about a facet by name rather than searching for one.",
+        inputSchema: detailShape,
+        annotations: {
+            title: "Facet detail",
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: true,
+        },
+    };
+
+    const handler = async (rawArgs: unknown): Promise<CallToolResult> => {
+        const args = detailSchema.parse(rawArgs ?? {});
+        try {
+            const data = await detail(args, deps);
+            return {
+                content: [{ type: "text", text: detailToText(data) }],
+                structuredContent: data as unknown as Record<string, unknown>,
+            };
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            return {
+                isError: true,
+                content: [{ type: "text", text: `Could not read ${args.name}. ${reason}` }],
+            };
+        }
+    };
+
+    if (deps.supportsUi === true) {
+        registerAppTool(
+            server,
+            "facet_detail",
+            { ...config, _meta: { ui: { resourceUri: PANEL_RESOURCE_URI } } },
+            handler as never,
+        );
+        return;
+    }
+    server.registerTool("facet_detail", config, handler as never);
+}
+
+const readmeShape = {
+    name: z.string().trim().min(1).max(200).describe("Facet name, e.g. `graphite` or `@scope/name`."),
+    version: z.string().trim().min(1).max(64).describe("Which version to read."),
+};
+
+const readmeSchema = z.object(readmeShape);
+
+/**
+ * Registers `facet_readme`.
+ *
+ * Like `facet_contents`, this is the panel calling on its own behalf — someone
+ * opened the README tab — so it carries no UI metadata and folds into the screen
+ * already showing.
+ */
+function registerReadme(server: Pick<McpServer, "registerTool">, deps: BrowseDeps): void {
+    const config = {
+        title: "Facet README",
+        description: "Read the README a published facet version ships, when it ships one.",
+        inputSchema: readmeShape,
+        annotations: {
+            title: "Facet README",
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: true,
+        },
+    };
+
+    const handler = async (rawArgs: unknown): Promise<CallToolResult> => {
+        const args = readmeSchema.parse(rawArgs ?? {});
+        try {
+            const data = await readme(args, deps);
+            const text = data.file === "" ? `${args.name}@${args.version} ships no README.` : data.text;
+            return {
+                content: [{ type: "text", text }],
+                structuredContent: data as unknown as Record<string, unknown>,
+            };
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            return {
+                isError: true,
+                content: [{ type: "text", text: `Could not read the README for ${args.name}@${args.version}. ${reason}` }],
+            };
+        }
+    };
+
+    server.registerTool("facet_readme", config, handler as never);
 }
 
 /**
