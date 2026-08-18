@@ -1,0 +1,709 @@
+// The console: one surface that stays put.
+//
+// A facet operation is rarely the last one. You search, you install, you look at
+// what you now have, you remove the thing you didn't want. So the panel is not a
+// card per call — it is a console with three places to be (the registry, this
+// project, the facet you are writing), and a tool result updates whichever of
+// them it is about rather than replacing the surface.
+//
+// That is the whole reason for the strip along the top: the facts a result card
+// used to carry — which operation, how it went, in the CLI's own words — are
+// still there, but they sit above a screen showing the state they produced. A
+// removal that reports success beside a list still containing the facet is the
+// failure this arrangement exists to prevent.
+//
+// Every call out to the server goes through {@link ConsolePorts}, which is what
+// lets the whole thing be driven in a test with no browser and no host: click a
+// button, assert what redrew.
+
+import { button, element, requireDocument, type PanelDocument, type PanelElement } from "./dom.js";
+import { renderStrip, type PanelData } from "./result.js";
+import {
+    emptyGalleryState,
+    renderGallery,
+    toGalleryData as readGallery,
+    type GalleryActions,
+    type GalleryData,
+    type GalleryFacet,
+    type GalleryState,
+} from "./gallery.js";
+import {
+    emptyDetailState,
+    renderDetail,
+    toDetailData as readDetail,
+    type DetailActions,
+    type DetailData,
+    type DetailState,
+    type DetailTab,
+    type ReadmeData,
+} from "./detail.js";
+import {
+    emptyInstalledState,
+    renderInstalled,
+    toInstalledData as readInstalled,
+    type InstalledActions,
+    type InstalledData,
+    type InstalledFacet,
+    type InstalledState,
+} from "./installed.js";
+import {
+    emptyAuthorState,
+    renderAuthor,
+    toAuthorData as readAuthor,
+    bumpVersion,
+    type AuthorActions,
+    type AuthorAsset,
+    type AuthorData,
+    type AuthorDrafts,
+    type AuthorState,
+} from "./author.js";
+
+/** Where the console is. Detail is reached from the registry, not from the nav. */
+export type Screen = "registry" | "detail" | "installed" | "author";
+
+/** How a mutation went, as the console cares about it. */
+export interface Outcome {
+    ok: boolean;
+    message?: string;
+}
+
+/** Arguments for one `facet_modify` run, in the CLI's own vocabulary. */
+export interface ModifyArgs {
+    target: "skill" | "agent" | "command" | "facet";
+    name?: string;
+    add?: boolean;
+    remove?: boolean;
+    description?: string;
+    facetName?: string;
+    version?: string;
+    private?: boolean;
+}
+
+/** Everything the console asks the server to do. */
+export interface ConsolePorts {
+    browse(query: string): Promise<GalleryData | undefined>;
+    detail(name: string, version?: string): Promise<DetailData | undefined>;
+    readme(name: string, version: string): Promise<ReadmeData | undefined>;
+    project(): Promise<InstalledData | undefined>;
+    manifest(): Promise<AuthorData | undefined>;
+    add(name: string, version?: string): Promise<Outcome>;
+    remove(name: string): Promise<Outcome>;
+    /** `facet install` — what Repair runs. */
+    install(): Promise<Outcome>;
+    verify(): Promise<Outcome>;
+    build(): Promise<Outcome>;
+    modify(args: ModifyArgs): Promise<Outcome>;
+}
+
+export interface ConsoleState {
+    screen: Screen;
+    /** The last operation's outcome, shown along the top. */
+    strip?: PanelData;
+    /** The screen currently fetching its own data, if any. */
+    loading: Screen | null;
+    registry?: GalleryData;
+    gallery: GalleryState;
+    detail?: DetailData;
+    detailState: DetailState;
+    installed?: InstalledData;
+    installedState: InstalledState;
+    author?: AuthorData;
+    authorState: AuthorState;
+}
+
+export function emptyConsoleState(): ConsoleState {
+    return {
+        screen: "registry",
+        loading: null,
+        gallery: emptyGalleryState(),
+        detailState: emptyDetailState(),
+        installedState: emptyInstalledState(),
+        authorState: emptyAuthorState(),
+    };
+}
+
+/** The three places the nav can take you, and what each one is called. */
+const NAV: readonly { key: Screen; label: string }[] = [
+    { key: "registry", label: "Registry" },
+    { key: "installed", label: "Installed" },
+    { key: "author", label: "Authoring" },
+];
+
+/** Which nav entry is lit for a given screen. Detail belongs to the registry. */
+function navFor(screen: Screen): Screen {
+    return screen === "detail" ? "registry" : screen;
+}
+
+/** What the console shell asks for. */
+export interface ConsoleActions {
+    go(screen: Screen): void;
+}
+
+/** Draws the shell: the nav, the outcome strip, and whatever screen is showing. */
+export function renderShell(
+    state: ConsoleState,
+    actions: ConsoleActions,
+    screen: PanelElement,
+    doc: PanelDocument = requireDocument(),
+): PanelElement {
+    const shell = element(doc, "div", "console");
+
+    const nav = element(doc, "nav", "nav");
+    nav.setAttribute("aria-label", "Facet Studio");
+    const lit = navFor(state.screen);
+    for (const entry of NAV) {
+        const on = lit === entry.key;
+        const node = button(doc, on ? "nav-item nav-on" : "nav-item", entry.label, () => actions.go(entry.key));
+        node.setAttribute("aria-current", on ? "page" : "false");
+        nav.appendChild(node);
+    }
+    shell.appendChild(nav);
+
+    if (state.strip !== undefined) {
+        shell.appendChild(renderStrip(state.strip, doc));
+    }
+
+    shell.appendChild(screen);
+    return shell;
+}
+
+/**
+ * Owns the console's state and redraws the container whenever it changes.
+ *
+ * Every method here follows the same shape: change the state, redraw, do the
+ * slow thing, change the state again, redraw. Nothing waits on a network call
+ * before the screen reflects that it started.
+ */
+export class ConsoleController {
+    private state: ConsoleState = emptyConsoleState();
+
+    constructor(
+        private readonly container: PanelElement,
+        private readonly ports: ConsolePorts,
+        private readonly doc: PanelDocument,
+    ) {}
+
+    /** The state a test wants to assert on. */
+    snapshot(): ConsoleState {
+        return this.state;
+    }
+
+    private set(patch: Partial<ConsoleState>): void {
+        this.state = { ...this.state, ...patch };
+        this.render();
+    }
+
+    /**
+     * Records a change without redrawing.
+     *
+     * Every redraw builds the tree again, which means the element a person is
+     * typing into is replaced under their cursor. So a keystroke updates the
+     * draft and stops there; the field on screen already shows what they typed,
+     * and the next real change — a save, a bump, a fresh read — draws it back in
+     * from the state.
+     */
+    private keep(patch: Partial<ConsoleState>): void {
+        this.state = { ...this.state, ...patch };
+    }
+
+    // -----------------------------------------------------------------------
+    // Taking delivery of a tool result
+    // -----------------------------------------------------------------------
+
+    /**
+     * Shows what a tool result is about.
+     *
+     * A read (browse, detail, project, manifest) replaces that screen's data and
+     * moves to it. Anything else is an operation: its outcome goes in the strip,
+     * and the screen it affected is re-read so what is on show is what is true.
+     */
+    show(result: unknown, outcome: PanelData): void {
+        // A read is answered by the screen it fills, so it earns no line in the
+        // strip. Only an operation does — the strip is for things that happened,
+        // not for things that were looked up.
+        const gallery = readGallery(result);
+        if (gallery !== undefined) {
+            this.set({ screen: "registry", registry: gallery, gallery: emptyGalleryState(), loading: null });
+            return;
+        }
+        const detail = readDetail(result);
+        if (detail !== undefined) {
+            this.set({ screen: "detail", detail, detailState: emptyDetailState(), loading: null });
+            return;
+        }
+        const installed = readInstalled(result);
+        if (installed !== undefined) {
+            this.set({
+                screen: "installed",
+                installed,
+                installedState: { ...emptyInstalledState(), latest: this.state.installedState.latest },
+                loading: null,
+            });
+            return;
+        }
+        const author = readAuthor(result);
+        if (author !== undefined) {
+            this.set({ screen: "author", author, authorState: emptyAuthorState(), loading: null });
+            return;
+        }
+
+        // Not a read: an operation, or an auth result that belongs to no screen.
+        // The strip carries it, and the screen it touched catches up.
+        this.set({ strip: outcome });
+        void this.refreshFor(outcome.operation);
+    }
+
+    /** Which screen an operation's name implies, so the right read is redone. */
+    private async refreshFor(operation: string): Promise<void> {
+        const label = operation.toLowerCase();
+        if (/(add|remove|update|install|list)/.test(label)) {
+            await this.loadInstalled();
+            return;
+        }
+        if (/(create|modify|build|verify|publish)/.test(label)) {
+            await this.loadAuthor();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Moving between screens
+    // -----------------------------------------------------------------------
+
+    go(screen: Screen): void {
+        this.set({ screen });
+        if (screen === "registry" && this.state.registry === undefined) {
+            void this.loadRegistry("");
+            return;
+        }
+        // A row left marked Removed is a promise that Undo is still available.
+        // Coming back to the screen is where that promise ends, so the list is
+        // read again rather than showing a facet that is no longer there.
+        if (screen === "installed" && (this.state.installed === undefined || this.hasRemovedRows())) {
+            void this.loadInstalled();
+            return;
+        }
+        if (screen === "author" && this.state.author === undefined) {
+            void this.loadAuthor();
+        }
+    }
+
+    /** Opens whichever screen makes sense first, and fetches it. */
+    start(screen: Screen = "installed"): void {
+        this.go(screen);
+    }
+
+    private hasRemovedRows(): boolean {
+        return Object.values(this.state.installedState.removes).includes("removed");
+    }
+
+    private async loadRegistry(query: string): Promise<void> {
+        this.set({ loading: "registry" });
+        const data = await this.ports.browse(query).catch(() => undefined);
+        this.set({ loading: null, ...(data === undefined ? {} : { registry: data, gallery: emptyGalleryState() }) });
+    }
+
+    private async loadInstalled(): Promise<void> {
+        this.set({ loading: "installed" });
+        const data = await this.ports.project().catch(() => undefined);
+        this.set({
+            loading: null,
+            ...(data === undefined
+                ? {}
+                : { installed: data, installedState: { ...emptyInstalledState(), latest: this.state.installedState.latest } }),
+        });
+    }
+
+    private async loadAuthor(): Promise<void> {
+        this.set({ loading: "author" });
+        const data = await this.ports.manifest().catch(() => undefined);
+        this.set({ loading: null, ...(data === undefined ? {} : { author: data, authorState: emptyAuthorState() }) });
+    }
+
+    // -----------------------------------------------------------------------
+    // The registry screen
+    // -----------------------------------------------------------------------
+
+    private galleryActions(): GalleryActions {
+        return {
+            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type } }),
+            open: facet => void this.openDetail(facet.name, facet.version),
+            install: facet => void this.installFromGallery(facet),
+        };
+    }
+
+    private async openDetail(name: string, version?: string): Promise<void> {
+        this.set({ screen: "detail", loading: "detail", detailState: emptyDetailState() });
+        const data = await this.ports.detail(name, version).catch(() => undefined);
+        if (data === undefined) {
+            this.set({ loading: null, screen: "registry" });
+            return;
+        }
+        this.set({ loading: null, detail: data });
+    }
+
+    private async installFromGallery(facet: GalleryFacet): Promise<void> {
+        const current = this.state.gallery.installs[facet.name] ?? "idle";
+        if (current === "installing" || current === "installed") {
+            return;
+        }
+        this.setInstall(facet.name, "installing");
+        const outcome = await this.ports
+            .add(facet.name, facet.version === "" ? undefined : facet.version)
+            .catch(error => ({ ok: false, message: reasonFor(error) }));
+        this.setInstall(facet.name, outcome.ok ? "installed" : "failed", outcome.ok ? undefined : outcome.message);
+        if (outcome.ok) {
+            // The Installed screen is now out of date, whether or not anyone is
+            // looking at it, so it gets re-read rather than left to go stale.
+            await this.loadInstalled();
+        }
+    }
+
+    private setInstall(name: string, status: GalleryState["installs"][string], message?: string): void {
+        const errors = { ...this.state.gallery.errors };
+        if (message === undefined) {
+            delete errors[name];
+        } else {
+            errors[name] = message;
+        }
+        this.set({ gallery: { ...this.state.gallery, installs: { ...this.state.gallery.installs, [name]: status }, errors } });
+    }
+
+    // -----------------------------------------------------------------------
+    // The detail screen
+    // -----------------------------------------------------------------------
+
+    private detailActions(): DetailActions {
+        return {
+            back: () => this.go("registry"),
+            version: version => void this.openDetail(this.state.detail?.facet ?? "", version),
+            tab: tab => void this.openTab(tab),
+            install: () => void this.installFromDetail(),
+        };
+    }
+
+    private async openTab(tab: DetailTab): Promise<void> {
+        this.set({ detailState: { ...this.state.detailState, tab } });
+        const facet = this.state.detail;
+        if (tab !== "readme" || facet === undefined || this.state.detailState.readmes[facet.version] !== undefined) {
+            return;
+        }
+        this.set({ detailState: { ...this.state.detailState, tab, loadingReadme: true } });
+        const readme = await this.ports.readme(facet.facet, facet.version).catch(() => undefined);
+        this.set({
+            detailState: {
+                ...this.state.detailState,
+                loadingReadme: false,
+                readmes: {
+                    ...this.state.detailState.readmes,
+                    [facet.version]: readme ?? { file: "", text: "", truncated: false },
+                },
+            },
+        });
+    }
+
+    private async installFromDetail(): Promise<void> {
+        const facet = this.state.detail;
+        if (facet === undefined || this.state.detailState.install === "installing") {
+            return;
+        }
+        this.set({ detailState: { ...this.state.detailState, install: "installing", error: undefined } });
+        const outcome = await this.ports
+            .add(facet.facet, facet.version === "" ? undefined : facet.version)
+            .catch(error => ({ ok: false, message: reasonFor(error) }));
+        this.set({
+            detailState: {
+                ...this.state.detailState,
+                install: outcome.ok ? "installed" : "failed",
+                ...(outcome.ok ? {} : { error: outcome.message ?? "The install did not complete." }),
+            },
+        });
+        if (outcome.ok) {
+            await this.loadInstalled();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The installed screen
+    // -----------------------------------------------------------------------
+
+    private installedActions(): InstalledActions {
+        return {
+            browse: () => this.go("registry"),
+            check: () => void this.checkForUpdates(),
+            update: (facet, version) => void this.update(facet, version),
+            confirmRemove: facet => this.setRemove(facet.name, "confirming"),
+            cancelRemove: facet => this.setRemove(facet.name, "idle"),
+            remove: facet => void this.remove(facet),
+            undo: facet => void this.undo(facet),
+            repair: () => void this.repair(),
+        };
+    }
+
+    private setRemove(name: string, state: InstalledState["removes"][string]): void {
+        this.set({
+            installedState: { ...this.state.installedState, removes: { ...this.state.installedState.removes, [name]: state } },
+        });
+    }
+
+    private setRowError(name: string, message?: string): void {
+        const errors = { ...this.state.installedState.errors };
+        if (message === undefined) {
+            delete errors[name];
+        } else {
+            errors[name] = message;
+        }
+        this.set({ installedState: { ...this.state.installedState, errors } });
+    }
+
+    /**
+     * Asks the registry what the latest version of each registry-sourced facet
+     * is, so an Update button can name a version that exists.
+     *
+     * Sequential on purpose: this is a handful of small reads against a public
+     * API, and a burst of them from a panel is a worse neighbour than a wait.
+     */
+    private async checkForUpdates(): Promise<void> {
+        const facets = (this.state.installed?.facets ?? []).filter(
+            facet => facet.installed && (facet.origin === "registry" || facet.origin === ""),
+        );
+        this.set({ installedState: { ...this.state.installedState, checking: true } });
+        const latest: Record<string, string> = { ...this.state.installedState.latest };
+        for (const facet of facets) {
+            const data = await this.ports.detail(facet.name).catch(() => undefined);
+            if (data !== undefined && data.version !== "") {
+                latest[facet.name] = data.version;
+            }
+        }
+        this.set({ installedState: { ...this.state.installedState, checking: false, latest } });
+    }
+
+    private async update(facet: InstalledFacet, version: string): Promise<void> {
+        this.set({
+            installedState: {
+                ...this.state.installedState,
+                updating: { ...this.state.installedState.updating, [facet.name]: true },
+            },
+        });
+        const outcome = await this.ports.add(facet.name, version).catch(error => ({ ok: false, message: reasonFor(error) }));
+        this.set({
+            installedState: {
+                ...this.state.installedState,
+                updating: { ...this.state.installedState.updating, [facet.name]: false },
+            },
+        });
+        if (!outcome.ok) {
+            this.setRowError(facet.name, outcome.message ?? "The update did not complete.");
+            return;
+        }
+        this.setRowError(facet.name);
+        await this.loadInstalled();
+    }
+
+    private async remove(facet: InstalledFacet): Promise<void> {
+        this.setRemove(facet.name, "removing");
+        const outcome = await this.ports.remove(facet.name).catch(error => ({ ok: false, message: reasonFor(error) }));
+        if (!outcome.ok) {
+            this.setRemove(facet.name, "idle");
+            this.setRowError(facet.name, outcome.message ?? "The removal did not complete.");
+            return;
+        }
+        // The row stays on screen, marked removed, so Undo has something to sit
+        // on. The list itself is re-read only when the person moves on.
+        this.setRemove(facet.name, "removed");
+        this.setRowError(facet.name);
+    }
+
+    /** Puts a removed facet back at the version it was on. */
+    private async undo(facet: InstalledFacet): Promise<void> {
+        this.setRemove(facet.name, "removing");
+        const outcome = await this.ports
+            .add(facet.name, facet.version === "" ? undefined : facet.version)
+            .catch(error => ({ ok: false, message: reasonFor(error) }));
+        if (!outcome.ok) {
+            this.setRemove(facet.name, "removed");
+            this.setRowError(facet.name, outcome.message ?? "It could not be put back.");
+            return;
+        }
+        await this.loadInstalled();
+    }
+
+    private async repair(): Promise<void> {
+        this.set({ installedState: { ...this.state.installedState, repairing: true } });
+        const outcome = await this.ports.install().catch(error => ({ ok: false, message: reasonFor(error) }));
+        this.set({ installedState: { ...this.state.installedState, repairing: false } });
+        if (!outcome.ok) {
+            this.setRowError("", outcome.message ?? "The repair did not complete.");
+            return;
+        }
+        await this.loadInstalled();
+    }
+
+    // -----------------------------------------------------------------------
+    // The authoring screen
+    // -----------------------------------------------------------------------
+
+    private authorActions(): AuthorActions {
+        const patch = (author: Partial<AuthorState>): void =>
+            this.set({ authorState: { ...this.state.authorState, ...author } });
+
+        return {
+            // Typed into, so recorded without a redraw — see keep().
+            draft: (name, value) =>
+                this.keep({ authorState: { ...this.state.authorState, drafts: { ...this.state.authorState.drafts, [name]: value } } }),
+            revert: () => patch({ drafts: {} }),
+            save: () => void this.saveFields(),
+            bump: part => {
+                const current = this.state.authorState.drafts.version ?? this.state.author?.version ?? "";
+                const next = bumpVersion(current, part);
+                if (next !== undefined) {
+                    patch({ drafts: { ...this.state.authorState.drafts, version: next } });
+                }
+            },
+            askPrivate: () => patch({ confirmingPrivate: true }),
+            cancelPrivate: () => patch({ confirmingPrivate: false }),
+            makePrivate: () => void this.runModify({ target: "facet", private: true }, { confirmingPrivate: false }),
+            verify: () => void this.runCheck("verify"),
+            build: () => void this.runCheck("build"),
+            editAsset: asset => patch({ editing: asset.name, assetDraft: asset.detail }),
+            draftAsset: value => this.keep({ authorState: { ...this.state.authorState, assetDraft: value } }),
+            cancelAsset: () => patch({ editing: null, assetDraft: "" }),
+            saveAsset: asset =>
+                void this.runModify(
+                    { target: assetTarget(asset.type), name: asset.name, description: this.state.authorState.assetDraft },
+                    { editing: null, assetDraft: "", busyAsset: asset.name },
+                ),
+            askRemoveAsset: asset => patch({ removing: asset.name }),
+            cancelRemoveAsset: () => patch({ removing: null }),
+            removeAsset: asset =>
+                void this.runModify(
+                    { target: assetTarget(asset.type), name: asset.name, remove: true },
+                    { removing: null, busyAsset: asset.name },
+                ),
+            chooseType: type => patch({ newAssetType: type }),
+            nameAsset: value => this.keep({ authorState: { ...this.state.authorState, newAssetName: value } }),
+            addAsset: () => {
+                const name = this.state.authorState.newAssetName.trim();
+                if (name === "") {
+                    return;
+                }
+                void this.runModify(
+                    { target: assetTarget(this.state.authorState.newAssetType), name, add: true },
+                    { newAssetName: "" },
+                );
+            },
+        };
+    }
+
+    /** Saves whichever manifest fields were actually edited, and nothing else. */
+    private async saveFields(): Promise<void> {
+        const author = this.state.author;
+        const drafts = this.state.authorState.drafts;
+        if (author === undefined) {
+            return;
+        }
+        const args: ModifyArgs = { target: "facet" };
+        if (drafts.name !== undefined && drafts.name !== author.name) {
+            args.facetName = drafts.name;
+        }
+        if (drafts.version !== undefined && drafts.version !== author.version) {
+            args.version = drafts.version;
+        }
+        if (drafts.description !== undefined && drafts.description !== author.description) {
+            args.description = drafts.description;
+        }
+        if (args.facetName === undefined && args.version === undefined && args.description === undefined) {
+            return;
+        }
+        await this.runModify(args, { saving: true });
+    }
+
+    /**
+     * Runs one `facet_modify` and re-reads the manifest afterwards.
+     *
+     * The re-read is the point: nothing on this screen is drawn from what we
+     * asked for, only from what the file says once the CLI has been through it.
+     */
+    private async runModify(args: ModifyArgs, before: Partial<AuthorState>): Promise<void> {
+        this.set({ authorState: { ...this.state.authorState, ...before, message: undefined } });
+        const outcome = await this.ports.modify(args).catch(error => ({ ok: false, message: reasonFor(error) }));
+        if (!outcome.ok) {
+            this.set({
+                authorState: {
+                    ...this.state.authorState,
+                    saving: false,
+                    busyAsset: null,
+                    message: outcome.message ?? "The edit did not complete.",
+                },
+            });
+            return;
+        }
+        await this.loadAuthor();
+    }
+
+    private async runCheck(which: "verify" | "build"): Promise<void> {
+        this.set({ authorState: { ...this.state.authorState, [which]: "running", message: undefined } });
+        const outcome = await (which === "verify" ? this.ports.verify() : this.ports.build()).catch(error => ({
+            ok: false,
+            message: reasonFor(error),
+        }));
+        this.set({
+            authorState: {
+                ...this.state.authorState,
+                [which]: outcome.ok ? "passed" : "failed",
+                ...(outcome.message === undefined ? {} : { message: outcome.message }),
+            },
+        });
+        if (outcome.ok && which === "build") {
+            // A build writes into dist/, which the screen lists.
+            await this.loadAuthor();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Drawing
+    // -----------------------------------------------------------------------
+
+    render(): void {
+        const doc = this.doc;
+        const screen = element(doc, "div", "screen");
+
+        if (this.state.loading === this.state.screen) {
+            screen.appendChild(element(doc, "p", "waiting", "Reading…"));
+        } else if (this.state.screen === "registry") {
+            appendTo(screen, this.state.registry === undefined
+                ? element(doc, "p", "waiting", "Nothing searched yet.")
+                : renderGallery(this.state.registry, this.state.gallery, this.galleryActions(), doc));
+        } else if (this.state.screen === "detail") {
+            appendTo(screen, this.state.detail === undefined
+                ? element(doc, "p", "waiting", "No facet opened.")
+                : renderDetail(this.state.detail, this.state.detailState, this.detailActions(), doc));
+        } else if (this.state.screen === "installed") {
+            appendTo(screen, this.state.installed === undefined
+                ? element(doc, "p", "waiting", "The project has not been read yet.")
+                : renderInstalled(this.state.installed, this.state.installedState, this.installedActions(), doc));
+        } else {
+            appendTo(screen, this.state.author === undefined
+                ? element(doc, "p", "waiting", "No facet.json read yet.")
+                : renderAuthor(this.state.author, this.state.authorState, this.authorActions(), doc));
+        }
+
+        this.container.textContent = "";
+        this.container.appendChild(renderShell(this.state, { go: next => this.go(next) }, screen, doc));
+    }
+}
+
+/** Appends a fragment or an element — both are just things with children. */
+function appendTo(parent: PanelElement, child: { appendChild?: unknown }): void {
+    parent.appendChild(child as object);
+}
+
+function reasonFor(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+/** The `facet modify` target for an asset type, defaulting to the safe one. */
+function assetTarget(type: string): "skill" | "agent" | "command" {
+    return type === "agent" || type === "command" ? type : "skill";
+}
+
+export type { AuthorDrafts, AuthorAsset, InstalledData, GalleryData, DetailData, AuthorData };

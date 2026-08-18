@@ -1,19 +1,31 @@
-// The Facet Studio result panel.
+// The Facet Studio panel.
 //
-// One view, `ui://facet-studio/panel.html`, renders any lifecycle tool result as
-// a branded card: which facet, which operation, how it went, and what assets came
-// out of it. There is no framework here on purpose — plain DOM calls keep the
-// bundle tiny and, more importantly, keep every untrusted string on the text side
-// of the fence.
+// One view, `ui://facet-studio/panel.html`, is published to the host and every
+// facet tool points at it. What it renders is the console in ./console.ts: three
+// screens over the registry, this project, and the facet being authored, with a
+// strip along the top saying how the last operation went.
 //
-// Safety rule for this whole file: tool results are arbitrary JSON from anywhere,
+// This file owns the edges rather than the drawing. It starts the console inside
+// the host's iframe and wires its ports to real tool calls; it assembles the page
+// the host loads; and it publishes that page as an MCP Apps resource. The screens
+// themselves are in ./gallery, ./detail, ./installed and ./author, and none of
+// them knows the host exists.
+//
+// Safety rule for the whole view: tool results are arbitrary JSON from anywhere,
 // so **no dynamic value is ever turned into markup**. Text reaches the page only
-// through `textContent` or `createTextNode`. Class names come from fixed
-// allowlists, never from payload strings.
+// through `textContent` or `createTextNode`, and class names come from fixed
+// allowlists, never from payload strings. See ./dom.ts.
 
 import { App, PostMessageTransport, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { RESOURCE_MIME_TYPE, registerAppResource } from "@modelcontextprotocol/ext-apps/server";
 import { ASSET_ACCENTS, buildRegistryTokensCss } from "./tokens.js";
+import { firstText, isErrorResult, type HostDocument, type PanelDocument, type PanelElement } from "./dom.js";
+import { STATUS_COLORS, toPanelData } from "./result.js";
+import { ConsoleController, type ConsolePorts, type ModifyArgs, type Outcome } from "./console.js";
+import { toGalleryData } from "./gallery.js";
+import { toDetailData, toReadmeData } from "./detail.js";
+import { toInstalledData } from "./installed.js";
+import { toAuthorData } from "./author.js";
 import type { McpServer, RegisteredResource } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "../server.js";
 
@@ -27,847 +39,40 @@ import panelShellHtml from "./panel.html" with { type: "text" };
 export const PANEL_RESOURCE_URI = "ui://facet-studio/panel.html";
 export const PANEL_RESOURCE_NAME = "Facet Panel";
 
-/** The element in panel.html that the card gets mounted into. */
+/** The element in panel.html that the console gets mounted into. */
 export const PANEL_CONTAINER_ID = "facet-panel";
 
 /** Placeholders in panel.html that {@link buildPanelHtml} fills in. */
 export const TOKENS_MARKER = "<!--facet:tokens-->";
 export const VIEW_SCRIPT_MARKER = "<!--facet:view-script-->";
 
-// ---------------------------------------------------------------------------
-// What the panel draws
-// ---------------------------------------------------------------------------
-
-/** How an operation ended. Anything unrecognized is treated as a success. */
-export type PanelStatus = "success" | "error" | "pending";
-
-const STATUS_LABELS: Record<PanelStatus, string> = {
-    success: "Succeeded",
-    error: "Failed",
-    pending: "In progress",
-};
-
-/** Status colors, matching the registry's semantic tokens. */
-const STATUS_COLORS: Record<PanelStatus, string> = {
-    success: "var(--ok)",
-    error: "var(--err)",
-    pending: "var(--act)",
-};
-
-/** One row of the asset table. */
-export interface PanelAsset {
-    /** skill / agent / command / server, or whatever the tool reported. */
-    type: string;
-    name: string;
-    detail?: string;
-}
-
-/** Everything the card needs, already normalized and type-checked. */
-export interface PanelData {
-    facet: string;
-    operation: string;
-    status: PanelStatus;
-    message?: string;
-    assets: PanelAsset[];
-}
-
-/** Fallbacks for fields a tool result didn't carry. */
-export interface PanelDefaults {
-    facet?: string;
-    operation?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Just enough DOM to build a card
-// ---------------------------------------------------------------------------
-//
-// The MCP server compiles without the DOM type library, so the panel describes
-// the handful of DOM calls it makes rather than importing browser types. Passing
-// the document in also means the renderer is a pure function that tests can drive
-// without a browser.
-
-export type PanelNode = object;
-
-export interface PanelElement {
-    className: string;
-    textContent: string | null;
-    appendChild(child: PanelNode): unknown;
-    setAttribute(name: string, value: string): void;
-    /** Present on real elements; the gallery uses it to wire its buttons. */
-    addEventListener?(type: string, handler: () => void): void;
-}
-
-export interface PanelFragment {
-    appendChild(child: PanelNode): unknown;
-}
-
-export interface PanelDocument {
-    createElement(tag: string): PanelElement;
-    createTextNode(data: string): PanelNode;
-    createDocumentFragment(): PanelFragment;
-}
-
-/** A document that can also find the mount point — i.e. a real browser one. */
-export interface HostDocument extends PanelDocument {
-    getElementById(id: string): PanelElement | null;
-}
-
-// ---------------------------------------------------------------------------
-// Normalizing whatever the host hands us
-// ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-    return isRecord(value) ? value : {};
-}
-
-/** First non-empty string among the candidates, or undefined. */
-function firstString(...candidates: unknown[]): string | undefined {
-    for (const candidate of candidates) {
-        if (typeof candidate === "string" && candidate.trim() !== "") {
-            return candidate;
-        }
-    }
-    return undefined;
-}
-
-/** The `text` parts of an MCP tool result's content array, in order. */
-function textParts(content: unknown): string[] {
-    if (!Array.isArray(content)) {
-        return [];
-    }
-    return content
-        .map(part => (isRecord(part) && part["type"] === "text" ? part["text"] : undefined))
-        .filter((text): text is string => typeof text === "string");
-}
-
-/** The object this string spells out, if it spells out an object at all. */
-function asJsonObject(text: string): Record<string, unknown> | undefined {
-    try {
-        const parsed: unknown = JSON.parse(text);
-        return isRecord(parsed) ? parsed : undefined;
-    } catch {
-        // Plain prose, not a payload. Fine — it becomes the message instead.
-        return undefined;
-    }
-}
-
-/**
- * The readable text of a result, joined.
- *
- * A part that parses as a JSON object is the payload, not prose, so it is left
- * out. That is the whole point: the card has one line for the message and it
- * has to read like a sentence, never like a dump of the result envelope. The
- * lifecycle tools put their full payload in a text part alongside the summary,
- * so without this rule a card that missed the summary would show that dump.
- */
-function collectProse(content: unknown): string | undefined {
-    const parts = textParts(content).filter(text => asJsonObject(text) === undefined);
-    return parts.length > 0 ? parts.join("\n") : undefined;
-}
-
-/** The first text part that happens to be a JSON object. */
-function parseJsonContent(content: unknown): Record<string, unknown> | undefined {
-    for (const text of textParts(content)) {
-        const parsed = asJsonObject(text);
-        if (parsed !== undefined) {
-            return parsed;
-        }
-    }
-    return undefined;
-}
-
-/** What a tool's text payload turned out to be saying. */
-interface Outcome {
-    /** The payload's own fields, when it carried a usable one. */
-    fields?: Record<string, unknown>;
-    /** The failure sentence, in the CLI's words. */
-    message?: string;
-    /** True only when the payload said outright that the run failed. */
-    failed: boolean;
-}
-
-/**
- * Unwraps the `{ ok: true, data } | { ok: false, error }` envelope the lifecycle
- * tools write into their text part.
- *
- * This is the fallback path — normally the summary in `structuredContent` says
- * everything the card needs. It matters when that summary doesn't arrive (an
- * older build, a host or proxy that drops it), because without unwrapping, the
- * only thing left to show would be the serialized envelope itself.
- */
-function readOutcome(payload: Record<string, unknown> | undefined): Outcome {
-    if (payload === undefined) {
-        return { failed: false };
-    }
-    if (typeof payload["ok"] !== "boolean") {
-        // Not the envelope — some other payload object. Read it as it stands.
-        return { fields: payload, failed: false };
-    }
-    if (payload["ok"] === true) {
-        const data = payload["data"];
-        return { ...(isRecord(data) ? { fields: data } : {}), failed: false };
-    }
-    const message = firstString(asRecord(payload["error"])["message"]);
-    return { ...(message === undefined ? {} : { message }), failed: true };
-}
-
-const STATUS_ALIASES: Record<string, PanelStatus> = {
-    success: "success",
-    succeeded: "success",
-    ok: "success",
-    done: "success",
-    error: "error",
-    failed: "error",
-    failure: "error",
-    pending: "pending",
-    running: "pending",
-    "in-progress": "pending",
-};
-
-/** The status the fields name, or failing that, whatever the result implied. */
-function readStatus(fields: Record<string, unknown>, failed: boolean): PanelStatus {
-    const raw = firstString(fields["status"], fields["state"]);
-    const alias = raw === undefined ? undefined : STATUS_ALIASES[raw.trim().toLowerCase()];
-    if (alias !== undefined) {
-        return alias;
-    }
-    return failed ? "error" : "success";
-}
-
-function readAssets(value: unknown): PanelAsset[] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-    const assets: PanelAsset[] = [];
-    for (const entry of value) {
-        if (!isRecord(entry)) {
-            continue;
-        }
-        const name = firstString(entry["name"], entry["id"], entry["path"]);
-        if (name === undefined) {
-            continue;
-        }
-        const detail = firstString(entry["detail"], entry["description"], entry["summary"]);
-        assets.push({
-            type: firstString(entry["type"], entry["kind"]) ?? "unknown",
-            name,
-            ...(detail === undefined ? {} : { detail }),
-        });
-    }
-    return assets;
-}
-
-/**
- * Turns anything — a raw MCP `CallToolResult`, a bare payload object, junk —
- * into the fields the card draws. Nothing here trusts its input: every value is
- * type-checked before it is kept, and unusable input yields a sane empty card
- * rather than an exception.
- *
- * There are three places a fact can come from, and they are tried in that
- * order. First `structuredContent`, which is where the tools put the summary
- * written for exactly this card — facet, operation, status, message, assets.
- * Then the text payload, unwrapped from its `{ ok, ... }` envelope. Last, the
- * plain prose of the result, which is all the auth tools send.
- *
- * Running this over an already-normalized {@link PanelData} leaves it unchanged,
- * so callers can hand it either shape.
- */
-export function toPanelData(value: unknown, defaults: PanelDefaults = {}): PanelData {
-    const top = asRecord(value);
-    const structured = top["structuredContent"];
-    const outcome = readOutcome(parseJsonContent(top["content"]));
-    const fields = isRecord(structured) ? structured : (outcome.fields ?? top);
-
-    const message = firstString(
-        fields["message"],
-        fields["error"],
-        fields["summary"],
-        outcome.message,
-        collectProse(top["content"]),
-    );
-
-    const failed =
-        top["isError"] === true || outcome.failed || fields["ok"] === false || fields["success"] === false;
-
-    return {
-        facet: firstString(fields["facet"], fields["name"], defaults.facet) ?? "Unknown facet",
-        operation: firstString(fields["operation"], fields["tool"], defaults.operation) ?? "Result",
-        status: readStatus(fields, failed),
-        ...(message === undefined ? {} : { message }),
-        assets: readAssets(fields["assets"]),
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-/**
- * Makes an element. `text`, when given, is the ONLY way payload data enters the
- * page — as a text node, never as markup.
- */
-function element(doc: PanelDocument, tag: string, className?: string, text?: string): PanelElement {
-    const node = doc.createElement(tag);
-    if (className !== undefined) {
-        node.className = className;
-    }
-    if (text !== undefined) {
-        node.textContent = text;
-    }
-    return node;
-}
-
-/**
- * The CSS class for an asset type. Payload strings never reach a class name:
- * a type is used only if there is an accent for it, otherwise it falls back
- * to the neutral one.
- */
-function assetTypeClass(type: string): string {
-    const known = Object.hasOwn(ASSET_ACCENTS, type) ? type : "unknown";
-    return `chip type-${known}`;
-}
-
-function headerCell(doc: PanelDocument, label: string): PanelElement {
-    const cell = element(doc, "th", undefined, label);
-    cell.setAttribute("scope", "col");
-    return cell;
-}
-
-function assetTable(doc: PanelDocument, assets: PanelAsset[]): PanelElement {
-    const table = element(doc, "table", "assets");
-    table.appendChild(element(doc, "caption", undefined, "Assets"));
-
-    const head = element(doc, "thead");
-    const headRow = element(doc, "tr");
-    // The three headers the presentation skill mandates, word for word, so the
-    // card and the prose fallback describe a result the same way.
-    for (const label of ["Type", "Name", "Description"]) {
-        headRow.appendChild(headerCell(doc, label));
-    }
-    head.appendChild(headRow);
-    table.appendChild(head);
-
-    const body = element(doc, "tbody");
-    for (const asset of assets) {
-        const row = element(doc, "tr");
-
-        const typeCell = element(doc, "td");
-        const chip = element(doc, "span", assetTypeClass(asset.type));
-        chip.appendChild(element(doc, "span", "dot"));
-        chip.appendChild(doc.createTextNode(asset.type));
-        typeCell.appendChild(chip);
-        row.appendChild(typeCell);
-
-        row.appendChild(element(doc, "td", "asset-name", asset.name));
-        row.appendChild(element(doc, "td", "asset-detail", asset.detail ?? "—"));
-        body.appendChild(row);
-    }
-    table.appendChild(body);
-
-    return table;
-}
-
-/**
- * Builds the branded card for one tool result.
- *
- * Pure: it touches nothing outside the fragment it returns, which is what makes
- * it testable without a browser. Pass a document explicitly when there is no
- * global one.
- */
-export function renderResult(data: unknown, doc: PanelDocument = requireDocument()): PanelFragment {
-    const panel = toPanelData(data);
-    const fragment = doc.createDocumentFragment();
-
-    const card = element(doc, "article", "card");
-    fragment.appendChild(card);
-
-    const header = element(doc, "header", "card-head");
-    header.appendChild(element(doc, "p", "operation", panel.operation));
-    header.appendChild(element(doc, "h1", "facet", panel.facet));
-    card.appendChild(header);
-
-    const status = element(doc, "p", `status status-${panel.status}`);
-    status.appendChild(element(doc, "span", "dot"));
-    status.appendChild(element(doc, "span", "status-text", STATUS_LABELS[panel.status]));
-    card.appendChild(status);
-
-    if (panel.message !== undefined) {
-        card.appendChild(element(doc, "p", "message", panel.message));
-    }
-
-    card.appendChild(
-        panel.assets.length > 0
-            ? assetTable(doc, panel.assets)
-            : element(doc, "p", "empty", "No assets reported."),
-    );
-
-    return fragment;
-}
-
-// ---------------------------------------------------------------------------
-// The gallery
-// ---------------------------------------------------------------------------
-//
-// This half is interactive: filter chips narrow the list, Install runs a real
-// tool call, and expanding a card fetches what is inside it. All of that state
-// lives in a controller rather than the DOM, so the whole thing can be driven in
-// a test with no browser and no host — click a button, assert what redrew.
-
-/** One asset-count chip on a gallery card. */
-export interface GalleryCount {
-    type: string;
-    label: string;
-}
-
-/** One facet in the gallery. */
-export interface GalleryFacet {
-    name: string;
-    version: string;
-    description: string;
-    publisher: string;
-    published: string;
-    counts: GalleryCount[];
-}
-
-/** A browse result, once it has been checked. */
-export interface GalleryData {
-    query: string;
-    results: GalleryFacet[];
-}
-
-/** One asset inside an expanded facet. */
-export interface GalleryAsset {
-    type: string;
-    name: string;
-    detail: string;
-}
-
-/** Where an install has got to. */
-export type InstallState = "idle" | "installing" | "installed" | "failed";
-
-/** Everything the gallery draws that isn't the search result itself. */
-export interface GalleryState {
-    /** `all`, or one asset type. */
-    filter: string;
-    installs: Record<string, InstallState>;
-    /** Why an install failed, keyed by facet name. */
-    errors: Record<string, string>;
-    /** Which card is expanded, if any. */
-    open: string | null;
-    /** Asset lists already fetched, keyed by facet name. */
-    contents: Record<string, GalleryAsset[]>;
-    /** Facets whose contents are in flight. */
-    loading: Record<string, boolean>;
-}
-
-export function emptyGalleryState(): GalleryState {
-    return { filter: "all", installs: {}, errors: {}, open: null, contents: {}, loading: {} };
-}
-
-/** What the gallery asks the outside world to do. */
-export interface GalleryActions {
-    install(facet: GalleryFacet): void;
-    toggle(facet: GalleryFacet): void;
-    filter(type: string): void;
-}
-
-function toGalleryCount(value: unknown): GalleryCount | undefined {
-    const record = asRecord(value);
-    const label = firstString(record.label);
-    const type = firstString(record.type);
-    return label === undefined ? undefined : { type: type ?? "unknown", label };
-}
-
-function toGalleryFacet(value: unknown): GalleryFacet | undefined {
-    const record = asRecord(value);
-    const name = firstString(record.name);
-    if (name === undefined) {
-        return undefined;
-    }
-    const counts = Array.isArray(record.counts)
-        ? record.counts.map(toGalleryCount).filter((count): count is GalleryCount => count !== undefined)
-        : [];
-    return {
-        name,
-        version: firstString(record.version) ?? "",
-        description: firstString(record.description) ?? "",
-        publisher: firstString(record.publisher) ?? "",
-        published: firstString(record.published) ?? "",
-        counts,
-    };
-}
-
-/**
- * Reads a browse result, or returns undefined when this isn't one.
- *
- * The discriminator is `kind: "gallery"` on the structured content. Anything
- * else falls through to the lifecycle card.
- */
-export function toGalleryData(value: unknown): GalleryData | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "gallery"
-        ? structured
-        : firstString(outer.kind) === "gallery"
-          ? outer
-          : undefined;
-    if (source === undefined) {
-        return undefined;
-    }
-    const results = Array.isArray(source.results)
-        ? source.results.map(toGalleryFacet).filter((facet): facet is GalleryFacet => facet !== undefined)
-        : [];
-    return { query: firstString(source.query) ?? "", results };
-}
-
-/** Reads a `facet_contents` result into the asset list a card shows. */
-export function toContentAssets(value: unknown): GalleryAsset[] | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "contents"
-        ? structured
-        : firstString(outer.kind) === "contents"
-          ? outer
-          : undefined;
-    if (source === undefined || !Array.isArray(source.assets)) {
-        return undefined;
-    }
-    return source.assets
-        .map(entry => {
-            const record = asRecord(entry);
-            const name = firstString(record.name);
-            if (name === undefined) {
-                return undefined;
-            }
-            return {
-                name,
-                type: firstString(record.type) ?? "unknown",
-                detail: firstString(record.detail) ?? "",
-            };
-        })
-        .filter((asset): asset is GalleryAsset => asset !== undefined);
-}
-
-/** The filters offered above the list, in the registry's order. */
-const FILTERS: readonly { key: string; label: string }[] = [
-    { key: "all", label: "Everything" },
-    { key: "skill", label: "Skills" },
-    { key: "agent", label: "Agents" },
-    { key: "command", label: "Commands" },
-    { key: "server", label: "MCP" },
-];
-
-/** Whether a facet carries at least one asset of the filtered type. */
-function matchesFilter(facet: GalleryFacet, filter: string): boolean {
-    return filter === "all" || facet.counts.some(count => count.type === filter);
-}
-
-function onClick(node: PanelElement, handler: () => void): void {
-    node.addEventListener?.("click", handler);
-}
-
-/** A real button, so it is focusable and reachable from the keyboard. */
-function button(doc: PanelDocument, className: string, label: string, handler: () => void): PanelElement {
-    const node = element(doc, "button", className, label);
-    node.setAttribute("type", "button");
-    onClick(node, handler);
-    return node;
-}
-
-/** Draws the browse gallery: one card per facet, in the registry's idiom. */
-export function renderGallery(
-    data: GalleryData,
-    state: GalleryState,
-    actions: GalleryActions,
-    doc: PanelDocument = requireDocument(),
-): PanelFragment {
-    const fragment = doc.createDocumentFragment();
-    const shown = data.results.filter(facet => matchesFilter(facet, state.filter));
-
-    const head = element(doc, "header", "gallery-head");
-    head.appendChild(element(doc, "p", "operation", data.query === "" ? "Registry" : `Search · ${data.query}`));
-    head.appendChild(
-        element(doc, "p", "gallery-count", `${shown.length} ${shown.length === 1 ? "facet" : "facets"}`),
-    );
-    fragment.appendChild(head);
-
-    const filters = element(doc, "div", "filters");
-    for (const entry of FILTERS) {
-        const on = state.filter === entry.key;
-        const node = button(doc, on ? "filter filter-on" : "filter", entry.label, () => actions.filter(entry.key));
-        node.setAttribute("aria-pressed", on ? "true" : "false");
-        filters.appendChild(node);
-    }
-    fragment.appendChild(filters);
-
-    if (shown.length === 0) {
-        const empty = element(doc, "div", "empty-state");
-        empty.appendChild(
-            element(
-                doc,
-                "p",
-                "empty",
-                data.results.length === 0
-                    ? data.query === ""
-                        ? "The registry returned no facets."
-                        : `Nothing matched ${data.query}.`
-                    : "No facet in these results carries that.",
-            ),
-        );
-        if (data.results.length > 0) {
-            empty.appendChild(button(doc, "cta cta-lead", "Show everything", () => actions.filter("all")));
-        }
-        fragment.appendChild(empty);
-        return fragment;
-    }
-
-    const list = element(doc, "div", "gallery");
-    for (const facet of shown) {
-        list.appendChild(galleryCard(doc, facet, state, actions));
-    }
-    fragment.appendChild(list);
-    return fragment;
-}
-
-const INSTALL_LABELS: Record<InstallState, string> = {
-    idle: "Install",
-    installing: "Installing…",
-    installed: "Installed",
-    failed: "Retry",
-};
-
-const INSTALL_CLASSES: Record<InstallState, string> = {
-    idle: "cta cta-lead",
-    installing: "cta cta-busy",
-    installed: "cta cta-done",
-    failed: "cta cta-failed",
-};
-
-function galleryCard(
-    doc: PanelDocument,
-    facet: GalleryFacet,
-    state: GalleryState,
-    actions: GalleryActions,
-): PanelElement {
-    const open = state.open === facet.name;
-    const card = element(doc, "article", open ? "card facet-card facet-card-open" : "card facet-card");
-
-    const top = element(doc, "div", "facet-top");
-    const heading = element(doc, "div", "facet-heading");
-    const name = button(doc, "facet-name", facet.name, () => actions.toggle(facet));
-    name.setAttribute("aria-expanded", open ? "true" : "false");
-    heading.appendChild(name);
-    if (facet.version !== "") {
-        heading.appendChild(element(doc, "span", "facet-version", facet.version));
-    }
-    top.appendChild(heading);
-
-    const status = state.installs[facet.name] ?? "idle";
-    const install = button(doc, INSTALL_CLASSES[status], INSTALL_LABELS[status], () => actions.install(facet));
-    if (status === "installing" || status === "installed") {
-        install.setAttribute("disabled", "true");
-    }
-    top.appendChild(install);
-    card.appendChild(top);
-
-    if (facet.publisher !== "") {
-        card.appendChild(element(doc, "p", "facet-by", `by ${facet.publisher}`));
-    }
-    if (facet.description !== "") {
-        card.appendChild(element(doc, "p", "facet-desc", facet.description));
-    }
-
-    const failure = state.errors[facet.name];
-    if (status === "failed" && failure !== undefined) {
-        card.appendChild(element(doc, "p", "facet-error", failure));
-    }
-
-    const foot = element(doc, "div", "facet-foot");
-    const chips = element(doc, "div", "facet-chips");
-    for (const entry of facet.counts) {
-        const chip = element(doc, "span", assetTypeClass(entry.type));
-        chip.appendChild(element(doc, "span", "dot"));
-        chip.appendChild(element(doc, "span", undefined, entry.label));
-        chips.appendChild(chip);
-    }
-    foot.appendChild(chips);
-    const meta = element(doc, "div", "facet-meta");
-    if (facet.published !== "") {
-        meta.appendChild(element(doc, "span", "facet-date", facet.published));
-    }
-    const toggle = button(
-        doc,
-        "facet-toggle",
-        open ? "Hide contents" : "What is inside",
-        () => actions.toggle(facet),
-    );
-    toggle.setAttribute("aria-expanded", open ? "true" : "false");
-    meta.appendChild(toggle);
-    foot.appendChild(meta);
-    card.appendChild(foot);
-
-    if (open) {
-        card.appendChild(contentsBlock(doc, facet, state));
-    }
-
-    return card;
-}
-
-function contentsBlock(doc: PanelDocument, facet: GalleryFacet, state: GalleryState): PanelElement {
-    const block = element(doc, "div", "facet-inside");
-    const assets = state.contents[facet.name];
-
-    if (state.loading[facet.name] === true) {
-        block.appendChild(element(doc, "p", "facet-loading", "Reading the manifest…"));
-        return block;
-    }
-    if (assets === undefined) {
-        block.appendChild(element(doc, "p", "facet-loading", "Nothing to show yet."));
-        return block;
-    }
-    if (assets.length === 0) {
-        block.appendChild(element(doc, "p", "facet-loading", "This facet lists no assets."));
-        return block;
-    }
-
-    for (const asset of assets) {
-        const row = element(doc, "div", "inside-row");
-        const marker = element(doc, "span", assetTypeClass(asset.type));
-        marker.appendChild(element(doc, "span", "dot"));
-        marker.appendChild(element(doc, "span", undefined, asset.type));
-        row.appendChild(marker);
-        row.appendChild(element(doc, "span", "inside-name", asset.name));
-        if (asset.detail !== "") {
-            row.appendChild(element(doc, "span", "inside-detail", asset.detail));
-        }
-        block.appendChild(row);
-    }
-    return block;
-}
-
-// ---------------------------------------------------------------------------
-// The controller
-// ---------------------------------------------------------------------------
-
-/** The two tool calls the gallery makes on its own behalf. */
-export interface GalleryPorts {
-    install(facet: GalleryFacet): Promise<{ ok: boolean; message?: string }>;
-    contents(facet: GalleryFacet): Promise<GalleryAsset[]>;
-}
-
-/**
- * Owns the gallery's state and redraws the container whenever it changes.
- *
- * The ports are the only way out to the host, which is what lets a test drive a
- * real click through a real render with no browser in sight.
- */
-export class GalleryController {
-    private state: GalleryState = emptyGalleryState();
-
-    constructor(
-        private readonly container: PanelElement,
-        private readonly ports: GalleryPorts,
-        private readonly doc: PanelDocument,
-        private data: GalleryData = { query: "", results: [] },
-    ) {}
-
-    /** Replaces the result set — a fresh browse resets what was on screen. */
-    show(data: GalleryData): void {
-        this.data = data;
-        this.state = emptyGalleryState();
-        this.render();
-    }
-
-    /** The state a test wants to assert on. */
-    snapshot(): GalleryState {
-        return this.state;
-    }
-
-    render(): void {
-        const actions: GalleryActions = {
-            filter: type => {
-                this.state = { ...this.state, filter: type };
-                this.render();
-            },
-            toggle: facet => void this.toggle(facet),
-            install: facet => void this.install(facet),
-        };
-        this.container.textContent = "";
-        this.container.appendChild(renderGallery(this.data, this.state, actions, this.doc));
-    }
-
-    private async toggle(facet: GalleryFacet): Promise<void> {
-        if (this.state.open === facet.name) {
-            this.state = { ...this.state, open: null };
-            this.render();
-            return;
-        }
-        this.state = { ...this.state, open: facet.name };
-        if (this.state.contents[facet.name] !== undefined) {
-            this.render();
-            return;
-        }
-        this.state = { ...this.state, loading: { ...this.state.loading, [facet.name]: true } };
-        this.render();
-        try {
-            const assets = await this.ports.contents(facet);
-            this.state = { ...this.state, contents: { ...this.state.contents, [facet.name]: assets } };
-        } catch {
-            // An unreadable manifest shows as an empty list rather than a stuck spinner.
-            this.state = { ...this.state, contents: { ...this.state.contents, [facet.name]: [] } };
-        }
-        this.state = { ...this.state, loading: { ...this.state.loading, [facet.name]: false } };
-        this.render();
-    }
-
-    private async install(facet: GalleryFacet): Promise<void> {
-        const current = this.state.installs[facet.name] ?? "idle";
-        if (current === "installing" || current === "installed") {
-            return;
-        }
-        this.setInstall(facet.name, "installing");
-        try {
-            const outcome = await this.ports.install(facet);
-            if (outcome.ok) {
-                this.setInstall(facet.name, "installed");
-            } else {
-                this.setInstall(facet.name, "failed", outcome.message ?? "The install did not complete.");
-            }
-        } catch (error) {
-            this.setInstall(facet.name, "failed", error instanceof Error ? error.message : String(error));
-        }
-    }
-
-    private setInstall(name: string, status: InstallState, message?: string): void {
-        const errors = { ...this.state.errors };
-        if (message === undefined) {
-            delete errors[name];
-        } else {
-            errors[name] = message;
-        }
-        this.state = { ...this.state, installs: { ...this.state.installs, [name]: status }, errors };
-        this.render();
-    }
-}
-
-/** Swaps the container's contents for a freshly rendered card. */
-export function mount(container: PanelElement, data: unknown, doc: PanelDocument = requireDocument()): void {
-    // Assigning empty text drops every child without parsing anything.
-    container.textContent = "";
-    container.appendChild(renderResult(data, doc));
-}
-
-function requireDocument(): PanelDocument {
-    const doc = (globalThis as { document?: PanelDocument }).document;
-    if (doc === undefined) {
-        throw new Error("No global document — pass one to renderResult() explicitly.");
-    }
-    return doc;
-}
+// The parts of the view other modules and the tests reach for. Re-exported here
+// so `view/panel.js` stays the one import for anything about the panel.
+export {
+    assetTypeClass,
+    element,
+    firstText,
+    type HostDocument,
+    type PanelDocument,
+    type PanelElement,
+    type PanelFragment,
+    type PanelNode,
+} from "./dom.js";
+export {
+    mount,
+    renderResult,
+    renderStrip,
+    toPanelData,
+    type PanelAsset,
+    type PanelData,
+    type PanelDefaults,
+    type PanelStatus,
+} from "./result.js";
+export { toGalleryData, renderGallery, type GalleryData, type GalleryFacet } from "./gallery.js";
+export { toDetailData, toReadmeData, renderDetail, type DetailData } from "./detail.js";
+export { toInstalledData, renderInstalled, type InstalledData } from "./installed.js";
+export { toAuthorData, renderAuthor, type AuthorData } from "./author.js";
+export { ConsoleController, renderShell, type ConsolePorts, type ConsoleState, type Screen } from "./console.js";
 
 // ---------------------------------------------------------------------------
 // View side: connect to the host and draw what it sends
@@ -875,10 +80,45 @@ function requireDocument(): PanelDocument {
 
 type TransportArgs = ConstructorParameters<typeof PostMessageTransport>;
 
+/** A tool result, read as the outcome of an operation. */
+function outcomeOf(result: unknown): Outcome {
+    return isErrorResult(result)
+        ? { ok: false, ...(firstText(result) === undefined ? {} : { message: firstText(result) as string }) }
+        : { ok: true };
+}
+
 /**
- * Starts the panel inside the host's iframe: connect, follow the host's theme,
- * and redraw on every tool result. Returns undefined when there is no browser
- * around, which is how the server-side half of this module stays importable.
+ * The console's calls back into the server.
+ *
+ * Every one of them is a tool a person could run by hand — `facet_add` for an
+ * install, `facet_modify` for an edit — so the panel drives the real lifecycle
+ * rather than a private path of its own.
+ */
+export function hostPorts(app: Pick<App, "callServerTool">): ConsolePorts {
+    const call = (name: string, args: Record<string, unknown> = {}): Promise<unknown> =>
+        app.callServerTool({ name, arguments: args });
+
+    return {
+        browse: async query => toGalleryData(await call("facet_browse", query === "" ? {} : { query })),
+        detail: async (name, version) =>
+            toDetailData(await call("facet_detail", version === undefined ? { name } : { name, version })),
+        readme: async (name, version) => toReadmeData(await call("facet_readme", { name, version })),
+        project: async () => toInstalledData(await call("facet_project")),
+        manifest: async () => toAuthorData(await call("facet_manifest")),
+        add: async (name, version) => outcomeOf(await call("facet_add", version === undefined ? { name } : { name, version })),
+        remove: async name => outcomeOf(await call("facet_remove", { name })),
+        install: async () => outcomeOf(await call("facet_install")),
+        verify: async () => outcomeOf(await call("facet_verify")),
+        build: async () => outcomeOf(await call("facet_build")),
+        modify: async (args: ModifyArgs) => outcomeOf(await call("facet_modify", { ...args })),
+    };
+}
+
+/**
+ * Starts the console inside the host's iframe: connect, follow the host's theme,
+ * and hand every tool result to the controller. Returns undefined when there is
+ * no browser around, which is how the server-side half of this module stays
+ * importable.
  */
 export async function bootstrap(): Promise<App | undefined> {
     const globals = globalThis as { document?: HostDocument; window?: { parent: unknown } };
@@ -892,42 +132,13 @@ export async function bootstrap(): Promise<App | undefined> {
         return undefined;
     }
 
-    const app = new App({ name: "facet-studio-panel", version: "0.4.0" });
-
-    // The gallery's two calls back into the server. Install runs the same
-    // `facet_add` a person would run by hand, so the panel is driving the real
-    // lifecycle rather than pretending.
-    const controller = new GalleryController(
-        container,
-        {
-            install: async facet => {
-                const result = await app.callServerTool({
-                    name: "facet_add",
-                    arguments: { source: facet.name },
-                });
-                const failed = (result as { isError?: boolean }).isError === true;
-                return { ok: !failed, message: failed ? firstText(result) : undefined };
-            },
-            contents: async facet => {
-                const result = await app.callServerTool({
-                    name: "facet_contents",
-                    arguments: { name: facet.name, version: facet.version },
-                });
-                return toContentAssets(result) ?? [];
-            },
-        },
-        doc,
-    );
+    const app = new App({ name: "facet-studio-panel", version: "0.5.0" });
+    const console_ = new ConsoleController(container, hostPorts(app), doc);
 
     // Handlers go on before connect, or the first notification can slip past.
     app.ontoolresult = result => {
-        const gallery = toGalleryData(result);
-        if (gallery !== undefined) {
-            controller.show(gallery);
-            return;
-        }
         const toolName = app.getHostContext()?.toolInfo?.tool.name;
-        mount(container, toPanelData(result, { operation: toolName ?? "Result" }), doc);
+        console_.show(result, toPanelData(result, { operation: toolName ?? "Result" }));
     };
     app.onhostcontextchanged = context => {
         if (context.theme !== undefined) {
@@ -941,13 +152,12 @@ export async function bootstrap(): Promise<App | undefined> {
     if (theme !== undefined) {
         applyDocumentTheme(theme);
     }
-    return app;
-}
 
-/** The first readable line of a tool result, for an error message. */
-function firstText(result: unknown): string | undefined {
-    const parts = textParts(asRecord(result).content);
-    return parts.length > 0 ? parts[0] : undefined;
+    // The tool that opened the panel delivers its own result through
+    // `ontoolresult`; this is for the case where nothing has arrived yet, so the
+    // console still comes up on something real rather than an empty frame.
+    console_.start("installed");
+    return app;
 }
 
 // Self-start in a browser; stay inert everywhere else (tests, the MCP server).
@@ -985,7 +195,7 @@ function requireMarker(shell: string, marker: string): void {
 }
 
 /**
- * The per-status and per-asset-type colors the card needs, as CSS variables.
+ * The per-status and per-asset-type colors the screens need, as CSS variables.
  *
  * These sit on top of the registry token sheet: the tokens define the palette,
  * this maps it onto the panel's own status and asset names. Asset chips get the
@@ -995,9 +205,11 @@ function requireMarker(shell: string, marker: string): void {
 function buildBrandCss(): string {
     const statusVars = Object.entries(STATUS_COLORS).map(([name, color]) => `  --status-${name}: ${color};`);
     const assetVars = Object.entries(ASSET_ACCENTS).map(([name, color]) => `  --asset-${name}: ${color};`);
-    const statusRules = Object.keys(STATUS_COLORS).map(
-        name => `.status-${name} .dot { background: var(--status-${name}); }`,
-    );
+    const statusRules = Object.keys(STATUS_COLORS).flatMap(name => [
+        `.status-${name} .dot { background: var(--status-${name}); }`,
+        `.strip-${name} .dot { background: var(--status-${name}); }`,
+        `.strip-${name} { border-color: color-mix(in oklab, var(--status-${name}) 40%, var(--line)); }`,
+    ]);
     const assetRules = Object.keys(ASSET_ACCENTS).flatMap(name => [
         `.type-${name} .dot { background: var(--asset-${name}); }`,
         `.type-${name} {`,
@@ -1084,7 +296,7 @@ export function registerPanel(
         PANEL_RESOURCE_NAME,
         PANEL_RESOURCE_URI,
         {
-            description: "Branded card view for Facet Studio lifecycle tool results.",
+            description: "The Facet Studio console: browse the registry, manage what this project has installed, and author a facet.",
             // Empty allowlists say it out loud: this view talks to nobody.
             _meta: { ui: { csp: { resourceDomains: [], connectDomains: [] } } },
         },
@@ -1099,3 +311,6 @@ export function registerPanel(
         }),
     );
 }
+
+/** Kept for callers that only want to know whether a container exists. */
+export type { PanelElement as PanelMountPoint };
