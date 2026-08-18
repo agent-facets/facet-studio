@@ -452,6 +452,15 @@ export function isUsableBearerToken(value: string): boolean {
  */
 export const MAX_BODY_SCAN = 64 * 1024;
 
+/**
+ * One character past the cap, and that is the whole lookahead.
+ *
+ * The boundary rule below needs to know one thing the cap alone can't tell it:
+ * whether the character the cut fell on continues the word before it or starts a
+ * new one. A single character answers that, so we read the cap plus one and stop.
+ */
+export const BODY_LOOKAHEAD = 1;
+
 /** How much of the scrubbed body actually reaches the error message. */
 const BODY_SHOWN = 200;
 
@@ -459,42 +468,136 @@ const BODY_SHOWN = 200;
 const BODY_TRUNCATED = "(rest of body omitted)";
 
 /**
+ * Where one run of untrusted text ends and the next begins.
+ *
+ * This is the list the boundary rule leans on, so it is drawn conservatively.
+ * Whitespace is obvious. The rest are the characters that structure the formats
+ * a registry answers in — JSON, HTML, a URL — *and* that a bearer credential
+ * cannot contain: RFC 6750 spells a bearer token with letters, digits and
+ * `-._~+/=`, so anything here is a character no credential of ours is made of.
+ *
+ * Note what is deliberately absent: `-`, `.`, `_`, `~`, `+`, `/` and `=` are all
+ * legal inside a token, so treating any of them as a boundary would let the front
+ * of a credential survive a cut. `~` is exactly how the old rule leaked.
+ */
+function isBodySeparator(code: number): boolean {
+    if (code === 0x20 || (code >= 0x09 && code <= 0x0d)) return true;
+    return (
+        code === 0x22 || // "
+        code === 0x27 || // '
+        code === 0x28 || // (
+        code === 0x29 || // )
+        code === 0x2c || // ,
+        code === 0x3a || // :
+        code === 0x3b || // ;
+        code === 0x3c || // <
+        code === 0x3e || // >
+        code === 0x3f || // ?
+        code === 0x40 || // @
+        code === 0x5b || // [
+        code === 0x5c || // \
+        code === 0x5d || // ]
+        code === 0x60 || // `
+        code === 0x7b || // {
+        code === 0x7c || // |
+        code === 0x7d //   }
+    );
+}
+
+/**
  * Cuts an untrusted body down to what we will scan, without splitting a secret.
  *
  * Cutting at a fixed length can land in the middle of a credential, and the half
  * that stays can be too short for the scrubber to recognise — `fct_pub_ABCD.PQ`
  * is two characters of somebody's secret and nothing the grammar matches. So
- * when the cut lands inside a run of credential characters, the whole run goes
- * and `[redacted]` stands in its place. The cost is the last word of a body big
- * enough to be cut, which is a body nobody was reading to the end of anyway.
+ * when the cut lands inside a run, the whole run goes back to the last separator
+ * and `[redacted]` stands in its place.
+ *
+ * The rewind stops at separators rather than at "characters a token is made of",
+ * and that distinction is the point. An authorization code is opaque: the
+ * provider picks the alphabet and we get to assume nothing about it. Rewinding
+ * by a token alphabet meant any character outside it — `~`, say, which every
+ * bearer grammar allows — ended the rewind early and left everything before it
+ * in the clear, as a fragment no exact-match scrub could recognise any more.
+ * Rewinding to a separator makes no assumption about what the secret looks like,
+ * only about where somebody else's text stops and it begins.
+ *
+ * `ended` is false when we stopped reading before the sender stopped sending and
+ * cannot see the character after the cut — a stream that broke, say. Then we
+ * assume the worst and redact the trailing run regardless.
+ *
+ * The cost is the last word of a body big enough to be cut, which is a body
+ * nobody was reading to the end of anyway. A body with no separator anywhere in
+ * 64 KiB loses all of it, which is the right answer for one unbroken 64 KiB word.
  */
-export function capUntrustedBody(raw: string): string {
-    if (raw.length <= MAX_BODY_SCAN) return raw;
+export function capUntrustedBody(raw: string, ended = true): string {
+    if (ended && raw.length <= MAX_BODY_SCAN) return raw;
     const window = raw.slice(0, MAX_BODY_SCAN);
-    if (!isBodyTokenChar(raw.charCodeAt(MAX_BODY_SCAN))) return window;
+    // A cut that landed on a separator split nothing: the word before it is whole.
+    if (raw.length > MAX_BODY_SCAN && isBodySeparator(raw.charCodeAt(MAX_BODY_SCAN))) return window;
     let at = window.length;
-    while (at > 0 && isBodyTokenChar(window.charCodeAt(at - 1))) at -= 1;
+    while (at > 0 && !isBodySeparator(window.charCodeAt(at - 1))) at -= 1;
     return at === window.length ? window : `${window.slice(0, at)}${REDACTED}`;
 }
 
-/** Everything a credential can be spelled with, dots included. */
-function isBodyTokenChar(code: number): boolean {
-    return isJwtChar(code) || code === DOT;
+/** What a bounded read came back with. */
+interface BoundedBody {
+    /** At most {@link MAX_BODY_SCAN} plus {@link BODY_LOOKAHEAD} characters of it. */
+    text: string;
+    /** True when we saw the body end on its own, before the cap and without error. */
+    ended: boolean;
 }
 
-/** Reads a response body for an error message: capped, scrubbed, and kept short. */
-async function describeBody(response: Response, known: readonly (string | undefined)[]): Promise<string> {
-    let raw: string;
+/**
+ * Reads the front of a response and hangs up.
+ *
+ * The body belongs to a stranger who chose its length, so we never ask for all
+ * of it: chunks come in until we hold the cap plus the lookahead, then the
+ * stream is cancelled and the rest is never sent. `response.text()` would have
+ * buffered and decoded the whole thing before any cap could apply, which handed
+ * a hostile registry a lever on our memory — 32 MB of noise cost us 32 MB.
+ *
+ * A chunk arrives whole or not at all, so the last one can carry us past the
+ * cap; the overshoot is dropped as it lands, and what this holds is never more
+ * than the cap plus the lookahead.
+ */
+async function readBoundedBody(response: Response): Promise<BoundedBody | null> {
+    // No stream at all means no content — a 204, or a body already consumed.
+    if (response.body === null) return { text: "", ended: true };
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    let ended = false;
     try {
-        raw = await response.text();
+        while (text.length < MAX_BODY_SCAN + BODY_LOOKAHEAD) {
+            const chunk = await reader.read();
+            if (chunk.done) {
+                ended = true;
+                break;
+            }
+            text += decoder.decode(chunk.value, { stream: true });
+            // A chunk arrives whole, so the last one can overshoot; drop the
+            // overshoot straight away rather than carry it around.
+            if (text.length > MAX_BODY_SCAN + BODY_LOOKAHEAD) text = text.slice(0, MAX_BODY_SCAN + BODY_LOOKAHEAD);
+        }
     } catch {
-        return "(no readable body)";
+        // A stream that broke mid-word is a cut like any other, so anything we
+        // did get still goes through the boundary rule with `ended` false.
+        if (text.length === 0) return null;
+    } finally {
+        await reader.cancel().catch(() => undefined);
     }
-    const cut = raw.length > MAX_BODY_SCAN;
-    const clean = scrubSecrets(capUntrustedBody(raw), known).replace(/\s+/g, " ").trim();
-    if (clean.length === 0) return cut ? `(nothing to read at the front of the body) ${BODY_TRUNCATED}` : "(empty body)";
+    return { text, ended: ended && text.length <= MAX_BODY_SCAN };
+}
+
+/** Reads a response body for an error message: bounded, scrubbed, and kept short. */
+async function describeBody(response: Response, known: readonly (string | undefined)[]): Promise<string> {
+    const body = await readBoundedBody(response);
+    if (body === null) return "(no readable body)";
+    const clean = scrubSecrets(capUntrustedBody(body.text, body.ended), known).replace(/\s+/g, " ").trim();
+    if (clean.length === 0) return body.ended ? "(empty body)" : `(nothing to read at the front of the body) ${BODY_TRUNCATED}`;
     const shown = clean.length > BODY_SHOWN ? `${clean.slice(0, BODY_SHOWN)}…` : clean;
-    return cut ? `${shown} ${BODY_TRUNCATED}` : shown;
+    return body.ended ? shown : `${shown} ${BODY_TRUNCATED}`;
 }
 
 // ---------------------------------------------------------------------------

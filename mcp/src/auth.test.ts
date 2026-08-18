@@ -55,6 +55,13 @@ const TEXT_ONLY: ClientCapabilities = {};
 /** A JWT-shaped string, so the redaction backstop has something real to catch. */
 const FAKE_JWT = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ sub: "u-1" })).toString("base64url")}.c2lnbmF0dXJlLWJ5dGVz`;
 const FAKE_PAT = "fct_pub_ABCDEFGHJKMN.PQRSTUVWXYZ23456789ABCDEFGHJKMNPQ";
+/**
+ * An authorization code shaped like nothing in particular, which is the point.
+ *
+ * Codes are opaque strings a provider hands out; nothing says they are base64url
+ * and nothing says they avoid `~`. The redaction has to hold anyway.
+ */
+const OPAQUE_CODE = "AUTHCODEabcdefgh~SECRETtail";
 /** A credential that is already on disk and working — the thing worth not losing. */
 const EXISTING_PAT = "fct_pub_OLDOLDOLDOLD.KEEPTHISONE23456789ABCDEFGHJKMN";
 
@@ -615,6 +622,49 @@ function hostileText(size: number): Record<string, string> {
     };
 }
 
+/**
+ * The longest opening slice of `secret` that `text` still shows, or null.
+ *
+ * A cut keeps the front of a credential and throws the rest away, so a leak here
+ * is always a prefix. Eight characters is the floor because that is where the
+ * exact-match scrub stops caring too — below it, a "fragment" is a coincidence.
+ */
+function fragmentLeakedFrom(text: string, secret: string): string | null {
+    for (let length = secret.length; length >= 8; length -= 1) {
+        const prefix = secret.slice(0, length);
+        if (text.includes(prefix)) return prefix;
+    }
+    return null;
+}
+
+/**
+ * A response body that reports how much of itself the reader actually pulled.
+ *
+ * It produces chunks only when asked, so `produced()` is a true measure of what
+ * a sender got to spend on us — and `cancelled()` says whether we hung up.
+ */
+function countingBody(chunk: string, chunks: number) {
+    const bytes = new TextEncoder().encode(chunk);
+    let produced = 0;
+    let sent = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+            if (sent >= chunks) {
+                controller.close();
+                return;
+            }
+            sent += 1;
+            produced += bytes.byteLength;
+            controller.enqueue(bytes);
+        },
+        cancel() {
+            cancelled = true;
+        },
+    });
+    return { stream, produced: () => produced, cancelled: () => cancelled };
+}
+
 describe("secrets never reach the transcript", () => {
     test("scrubSecrets removes tokens it knows and tokens it doesn't", () => {
         expect(scrubSecrets(`saved ${FAKE_PAT} ok`)).toBe("saved [redacted] ok");
@@ -812,6 +862,122 @@ describe("secrets never reach the transcript", () => {
         expect(capped.endsWith("registry error [redacted]")).toBe(true);
         // A cut landing on a space leaves the words before it alone.
         expect(capUntrustedBody(`${prose.slice(0, MAX_BODY_SCAN)} tail`).endsWith("[redacted]")).toBe(false);
+    });
+
+    test("the cut redacts a straddling credential whatever it is spelled with", () => {
+        // The finding this test exists for. The rewind used to walk back over
+        // PAT/JWT characters only, so any credential containing something else
+        // stopped it early and the part before that character survived the cut.
+        // `~` is the concrete case: `isUsableBearerToken` accepts it, RFC 6750's
+        // b64token grammar allows it, and the old rewind treated it as the end of
+        // the secret. An authorization code is opaque — we get to assume nothing
+        // about its alphabet — so the cut now walks back to the last separator.
+        const prose = "registry error ".repeat(Math.ceil(MAX_BODY_SCAN / 15));
+        for (const secret of [OPAQUE_CODE, FAKE_PAT, FAKE_JWT, `${FAKE_PAT}~${FAKE_JWT}`]) {
+            // Land the cut four characters into the secret's tail, so what is kept
+            // is a genuine fragment of it and never the whole thing.
+            const straddling = `${prose.slice(0, MAX_BODY_SCAN - secret.length + 4)}${secret} and more`;
+            expect(straddling.slice(MAX_BODY_SCAN - secret.length + 4).startsWith(secret)).toBe(true);
+
+            const capped = scrubSecrets(capUntrustedBody(straddling), [secret]);
+            expect({ secret, leaked: fragmentLeakedFrom(capped, secret) }).toEqual({ secret, leaked: null });
+            // The prose in front of it is untouched — only the cut word goes.
+            expect(capped.endsWith(" [redacted]")).toBe(true);
+            expect(capped.startsWith("registry error registry error ")).toBe(true);
+            expect(capped.length).toBeGreaterThan(MAX_BODY_SCAN - secret.length);
+        }
+    });
+
+    test("a body of whitespace and a straddling opaque code shows nothing of the code", async () => {
+        // The whole route, with the collapsing that makes the leak visible. Only
+        // the first 200 characters of a body reach the message, so a hostile
+        // provider pads the body with whitespace until the credential it wants
+        // echoed lands on the cut: the padding collapses to nothing and the
+        // fragment is the entire message. The code is a `known` secret here, and
+        // exact-match scrubbing cannot save us — a fragment is not a match.
+        const browser = browserThatRedirects({ code: OPAQUE_CODE });
+        const handlers = happyHandlers();
+        const padded = `${" ".repeat(MAX_BODY_SCAN - OPAQUE_CODE.length + 4)}${OPAQUE_CODE} and more`;
+        handlers["/oauth2/token"] = () => new Response(padded, { status: 400 });
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+        const error = await runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser })).then(
+            () => null,
+            (e: unknown) => e as AuthFlowError,
+        );
+
+        expect(error).toBeInstanceOf(AuthFlowError);
+        expect(error?.message).toContain("HTTP 400");
+        expect(error?.message).toContain("(rest of body omitted)");
+        expect(fragmentLeakedFrom(error?.message ?? "", OPAQUE_CODE)).toBe(null);
+        expect(error?.message).not.toContain("AUTHCODE");
+        expect(existsSync(config.credentialsPath)).toBe(false);
+    });
+
+    test("a body bigger than the cap is never pulled past the cap", async () => {
+        // The resource half of the finding. `describeBody` used to await
+        // `response.text()`, which buffers and decodes everything the sender
+        // cares to send before the cap is applied at all — so a registry could
+        // hand us 32 MB and we would hold all of it. The stream is now read a
+        // chunk at a time and cancelled once we have the cap plus its lookahead,
+        // and this asserts on the bytes the sender actually got to produce.
+        const chunk = "registry error ".repeat(560); // 8400 bytes
+        const total = 4_000 * chunk.length; // ~32 MB if it were all read
+        const noise = countingBody(chunk, 4_000);
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        handlers["/v0/auth/tokens"] = () => new Response(noise.stream, { status: 503 });
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+        const error = await runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser })).then(
+            () => null,
+            (e: unknown) => e as AuthFlowError,
+        );
+
+        expect(error?.message).toContain("refused to mint a token (HTTP 503)");
+        expect(error?.message).toContain("(rest of body omitted)");
+        // The cap plus at most a chunk in hand and a chunk queued ahead of it.
+        const ceiling = MAX_BODY_SCAN + 2 * chunk.length;
+        expect({ produced: noise.produced() <= ceiling, cancelled: noise.cancelled() }).toEqual({
+            produced: true,
+            cancelled: true,
+        });
+        expect(noise.produced()).toBeLessThan(total / 100);
+    }, 30_000);
+
+    test("a body that dies mid-word is treated as a cut, not as the whole story", async () => {
+        // Reading a stream instead of buffering it adds a way to be cut that
+        // `response.text()` never had: the sender hangs up part-way. There is no
+        // character after that cut to look at, so the last word is assumed to be
+        // half a secret and goes the same way one straddling the cap does.
+        const half = `nope ${FAKE_PAT.slice(0, 30)}`;
+        let delivered = false;
+        const stream = new ReadableStream<Uint8Array>({
+            // Erroring a stream throws its queue away, so the chunk has to be
+            // handed over and taken before the connection is allowed to die.
+            pull(controller) {
+                if (delivered) {
+                    controller.error(new Error("connection reset"));
+                    return;
+                }
+                delivered = true;
+                controller.enqueue(new TextEncoder().encode(half));
+            },
+        });
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        handlers["/v0/auth/tokens"] = () => new Response(stream, { status: 502 });
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+        const error = await runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser })).then(
+            () => null,
+            (e: unknown) => e as AuthFlowError,
+        );
+
+        expect(error?.message).toContain("HTTP 502");
+        expect(error?.message).toContain("nope [redacted]");
+        expect(error?.message).not.toContain("fct_pub_");
+        expect(existsSync(config.credentialsPath)).toBe(false);
     });
 
     test("sanitizeUntrusted flattens, scrubs, and truncates whatever it is handed", () => {
