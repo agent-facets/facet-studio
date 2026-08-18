@@ -30749,35 +30749,62 @@ function isUsableBearerToken(value) {
   return value.length > 0 && value.length <= 8192 && /^[\x21-\x7e]+$/.test(value);
 }
 var MAX_BODY_SCAN = 64 * 1024;
+var BODY_LOOKAHEAD = 1;
 var BODY_SHOWN = 200;
 var BODY_TRUNCATED = "(rest of body omitted)";
-function capUntrustedBody(raw) {
-  if (raw.length <= MAX_BODY_SCAN)
+function isBodySeparator(code) {
+  if (code === 32 || code >= 9 && code <= 13)
+    return true;
+  return code === 34 || code === 39 || code === 40 || code === 41 || code === 44 || code === 58 || code === 59 || code === 60 || code === 62 || code === 63 || code === 64 || code === 91 || code === 92 || code === 93 || code === 96 || code === 123 || code === 124 || code === 125;
+}
+function capUntrustedBody(raw, ended = true) {
+  if (ended && raw.length <= MAX_BODY_SCAN)
     return raw;
   const window2 = raw.slice(0, MAX_BODY_SCAN);
-  if (!isBodyTokenChar(raw.charCodeAt(MAX_BODY_SCAN)))
+  if (raw.length > MAX_BODY_SCAN && isBodySeparator(raw.charCodeAt(MAX_BODY_SCAN)))
     return window2;
   let at = window2.length;
-  while (at > 0 && isBodyTokenChar(window2.charCodeAt(at - 1)))
+  while (at > 0 && !isBodySeparator(window2.charCodeAt(at - 1)))
     at -= 1;
   return at === window2.length ? window2 : `${window2.slice(0, at)}${REDACTED}`;
 }
-function isBodyTokenChar(code) {
-  return isJwtChar(code) || code === DOT;
+async function readBoundedBody(response) {
+  if (response.body === null)
+    return { text: "", ended: true };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder;
+  let text = "";
+  let ended = false;
+  try {
+    while (text.length < MAX_BODY_SCAN + BODY_LOOKAHEAD) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        ended = true;
+        break;
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+      if (text.length > MAX_BODY_SCAN + BODY_LOOKAHEAD)
+        text = text.slice(0, MAX_BODY_SCAN + BODY_LOOKAHEAD);
+    }
+  } catch {
+    if (text.length === 0)
+      return null;
+  } finally {
+    await reader.cancel().catch(() => {
+      return;
+    });
+  }
+  return { text, ended: ended && text.length <= MAX_BODY_SCAN };
 }
 async function describeBody(response, known) {
-  let raw;
-  try {
-    raw = await response.text();
-  } catch {
+  const body = await readBoundedBody(response);
+  if (body === null)
     return "(no readable body)";
-  }
-  const cut = raw.length > MAX_BODY_SCAN;
-  const clean = scrubSecrets(capUntrustedBody(raw), known).replace(/\s+/g, " ").trim();
+  const clean = scrubSecrets(capUntrustedBody(body.text, body.ended), known).replace(/\s+/g, " ").trim();
   if (clean.length === 0)
-    return cut ? `(nothing to read at the front of the body) ${BODY_TRUNCATED}` : "(empty body)";
+    return body.ended ? "(empty body)" : `(nothing to read at the front of the body) ${BODY_TRUNCATED}`;
   const shown = clean.length > BODY_SHOWN ? `${clean.slice(0, BODY_SHOWN)}…` : clean;
-  return cut ? `${shown} ${BODY_TRUNCATED}` : shown;
+  return body.ended ? shown : `${shown} ${BODY_TRUNCATED}`;
 }
 function createPkce(random = randomBytes) {
   const verifier = base64url3(random(64));
@@ -33014,6 +33041,13 @@ function describe3(failure) {
 function reportRegistrationFailure(failure) {
   console.error(`facet-studio: ${describe3(failure)}`, failure.error);
 }
+function notify(report, failure) {
+  try {
+    report(failure);
+  } catch (reporterError) {
+    console.error(`facet-studio: the registration-failure reporter threw; ${describe3(failure)}`, reporterError);
+  }
+}
 var SERVED_REQUESTS = [
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -33047,7 +33081,7 @@ function registerAll(server, deps) {
   const report = deps.onRegistrationError ?? reportRegistrationFailure;
   const failed = failures.filter((failure) => failure !== undefined);
   for (const failure of failed) {
-    report(failure);
+    notify(report, failure);
   }
   if (failed.length > 0) {
     throw new AggregateError(failed.map((failure) => failure.error), failed.map(describe3).join("; "));
@@ -33070,8 +33104,8 @@ function createServer(deps = {}) {
       });
     });
     if (failure !== undefined) {
-      (deps.onRegistrationError ?? reportRegistrationFailure)(failure);
       refuseToServe(server, failure);
+      notify(deps.onRegistrationError ?? reportRegistrationFailure, failure);
     }
   };
   return server;
