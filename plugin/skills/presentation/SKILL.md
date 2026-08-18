@@ -27,7 +27,8 @@ When `facet-studio` MCP tools are available in-session, use them—they return t
 
 | Host | Apps panels | Markdown |
 |------|---|---|
-| Claude Desktop | ✓ | ✓ |
+| Claude Desktop (Chat) | ✓ | ✓ |
+| Claude Desktop (Code tab) | — | ✓ |
 | ChatGPT | ✓ | ✓ |
 | Cursor | ✓ | ✓ |
 | Claude Code CLI | — | ✓ |
