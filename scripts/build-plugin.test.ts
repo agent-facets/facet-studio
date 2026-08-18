@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { lstat, mkdir, mkdtemp, rm, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OUTPUT_MARKER, assertSafeOutDir, buildPlugin } from "./build-plugin.ts";
+import { OUTPUT_MANIFEST, OUTPUT_MARKER, assertSafeOutDir, buildPlugin } from "./build-plugin.ts";
 
 const cleanupDirs: string[] = [];
 
@@ -94,6 +94,15 @@ async function writeFixtureFacet(opts: FixtureOptions = {}): Promise<string> {
   await Bun.write(join(src, "commands", "demo-command.md"), "# Demo Command\n\nCommand body.\n");
 
   return src;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function walk(dir: string, base = dir): Promise<string[]> {
@@ -230,29 +239,48 @@ describe("buildPlugin", () => {
     }
   });
 
-  test("a rebuild replaces the generator's own output (stale files under it do not survive)", async () => {
-    const src = await writeFixtureFacet();
+  test("a rebuild removes every file the previous build wrote, leaving no orphans", async () => {
+    // The real test of "delete exactly what we wrote": build one facet, then
+    // change the facet so none of the old asset names exist any more. Every
+    // file (and every directory) the first build left has to be gone, without
+    // any recursive wipe being involved.
+    const src = await tempDir();
+    await writeFixtureFacet({ dir: src });
     const out = await tempDir();
-
-    // Build once so the directory is genuinely a previous output, then leave
-    // junk behind inside the directories this generator owns.
-    await buildPlugin(src, out);
-    await Bun.write(join(out, "skills", "gone-skill", "SKILL.md"), "should be gone");
-    await Bun.write(join(out, "agents", "gone.md"), "should be gone");
-    await Bun.write(join(out, "commands", "gone.md"), "should be gone");
-    await Bun.write(join(out, ".claude-plugin", "stale.json"), "{}");
-
     await buildPlugin(src, out);
 
-    for (const stale of [
-      join("skills", "gone-skill", "SKILL.md"),
-      join("agents", "gone.md"),
-      join("commands", "gone.md"),
-      join(".claude-plugin", "stale.json"),
-    ]) {
-      expect(await Bun.file(join(out, stale)).exists()).toBe(false);
-    }
-    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
+    expect(await Bun.file(join(out, "skills", "using-facets", "SKILL.md")).exists()).toBe(true);
+
+    // A second facet with entirely different asset names, from the same source
+    // directory into the same output directory.
+    await mkdir(join(src, "skills", "second-skill"), { recursive: true });
+    await Bun.write(join(src, "skills", "second-skill", "SKILL.md"), "# Second\n");
+    await Bun.write(join(src, "agents", "second-agent.md"), "# Second agent\n");
+    await writeFixtureFacet({
+      dir: src,
+      mutateManifest: (m) => {
+        m.skills = { "second-skill": { description: "The only skill now." } };
+        m.agents = { "second-agent": { description: "The only agent now." } };
+        m.commands = {};
+      },
+    });
+
+    await buildPlugin(src, out);
+
+    // Nothing from the first build survives - not the files, not the
+    // directories they lived in - and nothing beyond the second build's own
+    // output is there either.
+    expect(await walk(out)).toEqual(
+      [
+        OUTPUT_MARKER,
+        OUTPUT_MANIFEST,
+        join(".claude-plugin", "plugin.json"),
+        join("skills", "second-skill", "SKILL.md"),
+        join("agents", "second-agent.md"),
+      ].sort(),
+    );
+    expect(await pathExists(join(out, "skills", "using-facets"))).toBe(false);
+    expect(await pathExists(join(out, "commands"))).toBe(false);
   });
 
   test("a rebuild leaves alone everything the generator did not put there", async () => {
@@ -260,15 +288,34 @@ describe("buildPlugin", () => {
     const out = await tempDir();
 
     await buildPlugin(src, out);
-    // A person's own files, sitting next to the generated output.
+    // A person's own files: beside the generated output, and - the case that
+    // used to lose them - tucked inside a directory the generator does write.
     await Bun.write(join(out, "notes.md"), VICTIM_BYTES);
     await Bun.write(join(out, "my-stuff", "photo.jpg"), VICTIM_BYTES);
+    await Bun.write(join(out, "skills", "mine", "victim.txt"), VICTIM_BYTES);
+    await Bun.write(join(out, ".claude-plugin", "notes.json"), VICTIM_BYTES);
 
     await buildPlugin(src, out);
 
     expect(await Bun.file(join(out, "notes.md")).text()).toBe(VICTIM_BYTES);
     expect(await Bun.file(join(out, "my-stuff", "photo.jpg")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "skills", "mine", "victim.txt")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, ".claude-plugin", "notes.json")).text()).toBe(VICTIM_BYTES);
     expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).exists()).toBe(true);
+  });
+
+  test("every build records exactly the files it wrote", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    const recorded = await Bun.file(join(out, OUTPUT_MANIFEST)).json();
+    // The record is the whole of what is on disk - nothing emitted is left out
+    // of it (that file would become an orphan), and it names nothing that was
+    // never written (which would be a licence to delete a stranger's file).
+    expect([...recorded.paths].sort()).toEqual(await walk(out));
+    expect(recorded.paths).toContain(OUTPUT_MANIFEST);
+    expect(recorded.paths).toContain(OUTPUT_MARKER);
   });
 
   test("every build leaves its marker at the top of the output", async () => {
@@ -647,10 +694,11 @@ describe("buildPlugin refuses an output directory that holds files it did not ge
     expect((await lstat(join(out, "skills"))).isSymbolicLink()).toBe(true);
   });
 
-  test("a plugin directory built before markers existed is still wipeable", async () => {
+  test("a plugin directory built before markers existed is still buildable", async () => {
     // What the committed plugin/ looks like: everything at the top level is
     // something this generator emits, and there is a plugin manifest - but no
-    // marker, because it predates one.
+    // marker, because it predates one. The build takes it over and writes its
+    // own files; what it finds there it cannot prove it wrote, so it keeps it.
     const src = await writeFixtureFacet();
     const out = await tempDir();
     await Bun.write(join(out, ".claude-plugin", "plugin.json"), '{"name":"old"}');
@@ -659,8 +707,11 @@ describe("buildPlugin refuses an output directory that holds files it did not ge
 
     await buildPlugin(src, out);
 
-    expect(await Bun.file(join(out, "skills", "old-skill", "SKILL.md")).exists()).toBe(false);
+    expect(await Bun.file(join(out, ".claude-plugin", "plugin.json")).json()).toMatchObject({
+      name: "fixture-facet",
+    });
     expect(await Bun.file(join(out, OUTPUT_MARKER)).exists()).toBe(true);
+    expect(await Bun.file(join(out, OUTPUT_MANIFEST)).exists()).toBe(true);
   });
 
   test("that grandfather clause needs a plugin manifest, not just familiar names", async () => {
@@ -673,6 +724,86 @@ describe("buildPlugin refuses an output directory that holds files it did not ge
     await expect(buildPlugin(src, out)).rejects.toThrow("already holds files this build did not generate");
 
     expect(await Bun.file(join(out, "skills", "mine", "SKILL.md")).text()).toBe(VICTIM_BYTES);
+  });
+
+  test("a marker forged with the real signature still deletes nothing", async () => {
+    // The marker's opening line is public - it is sitting in every plugin this
+    // generator has ever built - so anyone can copy it exactly. Doing so used
+    // to be enough: the build accepted the marker as its own and removed the
+    // whole skills/ tree, victim and all. Deletion is driven by the record of
+    // what a build wrote, so a marker nobody's build wrote authorizes nothing.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await Bun.write(
+      join(out, OUTPUT_MARKER),
+      "Generated by facet build-plugin.\nand the rest of this is whatever I like\n",
+    );
+    await Bun.write(join(out, "skills", "mine", "victim.txt"), VICTIM_BYTES);
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "skills", "mine", "victim.txt")).text()).toBe(VICTIM_BYTES);
+    // The build did happen - it just wrote its own files alongside.
+    expect(await Bun.file(join(out, "skills", "using-facets", "SKILL.md")).exists()).toBe(true);
+  });
+
+  test("a pre-marker plugin directory keeps the nested files it did not generate", async () => {
+    // The legacy route to the same hole: no marker at all, but a plugin
+    // manifest and only names this generator emits, which is how a directory
+    // built before markers existed is recognized. That recognition is
+    // permission to build here, never permission to remove what is here.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await Bun.write(join(out, ".claude-plugin", "plugin.json"), '{"name":"old"}');
+    await Bun.write(join(out, "skills", "mine", "victim.txt"), VICTIM_BYTES);
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "skills", "mine", "victim.txt")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "skills", "using-facets", "SKILL.md")).exists()).toBe(true);
+  });
+
+  test("no record of a previous build means nothing is removed, not everything", async () => {
+    // A build's own output, with its record taken away - the shape you get from
+    // a half-finished build, a partial copy, or someone tidying up. The
+    // generator has no way to tell its own leftovers from a stranger's files
+    // any more, so it removes neither and simply writes over its own names.
+    const src = await writeFixtureFacet();
+    const out = await tempDir();
+    await buildPlugin(src, out);
+    await rm(join(out, OUTPUT_MANIFEST));
+    await Bun.write(join(out, "skills", "mine", "victim.txt"), VICTIM_BYTES);
+    await Bun.write(join(out, "agents", "orphan.md"), "from some older build\n");
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(join(out, "skills", "mine", "victim.txt")).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "agents", "orphan.md")).exists()).toBe(true);
+    expect(await Bun.file(join(out, "skills", "using-facets", "SKILL.md")).exists()).toBe(true);
+    expect(await Bun.file(join(out, OUTPUT_MANIFEST)).exists()).toBe(true);
+  });
+
+  test("a record naming paths outside the output directory is ignored, not obeyed", async () => {
+    // The record is a file like any other, so it can be edited. It only ever
+    // authorizes deleting things inside the output directory; one entry that
+    // reaches out of it makes the whole record untrustworthy, and an
+    // untrustworthy record deletes nothing at all.
+    const parent = await tempDir();
+    const src = await writeFixtureFacet({ dir: join(parent, "facet") });
+    const out = join(parent, "out");
+    await buildPlugin(src, out);
+
+    const neighbour = join(parent, "victim.txt");
+    await Bun.write(neighbour, VICTIM_BYTES);
+    await Bun.write(
+      join(out, OUTPUT_MANIFEST),
+      JSON.stringify({ generator: "facet build-plugin", paths: ["../victim.txt"] }),
+    );
+
+    await buildPlugin(src, out);
+
+    expect(await Bun.file(neighbour).text()).toBe(VICTIM_BYTES);
+    expect(await Bun.file(join(out, "skills", "using-facets", "SKILL.md")).exists()).toBe(true);
   });
 
   test("refusal happens before the wipe, so a second build stays deterministic", async () => {
