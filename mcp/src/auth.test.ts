@@ -41,6 +41,7 @@ import {
     writeCredentials,
 } from "./auth.js";
 import { createServer as createStudioServer } from "./server.js";
+import { toPanelData } from "./view/panel.js";
 
 const UI_CAPABLE: ClientCapabilities = { extensions: { [EXTENSION_ID]: {} } };
 /** A host that negotiated no UI extension at all — no panel exists for it. */
@@ -876,6 +877,11 @@ describe("the tools", () => {
         return result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
     }
 
+    /** The card the panel would draw from this result — the real seam, not a mock. */
+    function cardOf(result: CallToolResult) {
+        return toPanelData(result);
+    }
+
     test("both tools are listed with the panel and the right annotations", async () => {
         const harness = await connect();
         try {
@@ -1006,6 +1012,109 @@ describe("the tools", () => {
         }
     });
 
+    // The sign-in tools share one view with the lifecycle tools, so they have to
+    // fill in the same five fields. These drive the real `toPanelData` over a real
+    // tool result — the seam where a missing field turns into "Unknown facet".
+
+    test("facet_whoami draws a card about the account, not an unknown facet", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, FAKE_PAT);
+        const harness = await connect({ fetch: mockFetch(happyHandlers()).fn });
+        try {
+            const card = cardOf((await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult);
+            expect(card.facet).toBe("brigade-tester");
+            expect(card.operation).toBe("Registry identity");
+            expect(card.status).toBe("success");
+            expect(card.message).toContain("brigade-tester <brigade@example.test>");
+            // Signing in produces nothing, and an invented row would be a lie.
+            expect(card.assets).toEqual([]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("facet_whoami with no credential still names the registry it asked about", async () => {
+        // No account to name, so the card is about the registry instead. What it
+        // must never be is the panel's "no idea" placeholder.
+        const harness = await connect();
+        try {
+            const card = cardOf((await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult);
+            expect(card.facet).toBe("api.example.test");
+            expect(card.operation).toBe("Registry identity");
+            expect(card.message).toContain("not signed in");
+            expect(card.assets).toEqual([]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("facet_whoami draws a failed card when the credential doesn't check out", async () => {
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+        writeCredentials(config.credentialsPath, FAKE_PAT);
+        const handlers = happyHandlers();
+        handlers["/v0/auth/me"] = () => json({ code: "E_UNAUTHORIZED" }, 401);
+        const harness = await connect({ fetch: mockFetch(handlers).fn });
+        try {
+            const card = cardOf((await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult);
+            expect(card.facet).toBe("api.example.test");
+            expect(card.operation).toBe("Registry identity");
+            expect(card.status).toBe("error");
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("facet_login draws a card for every shape the sign-in can end in", async () => {
+        const browser = browserThatRedirects();
+        const signedIn = await connect({ fetch: mockFetch(happyHandlers()).fn, openBrowser: browser.openBrowser });
+        try {
+            const card = cardOf((await signedIn.client.callTool({ name: "facet_login" })) as CallToolResult);
+            expect(card.facet).toBe("brigade-tester");
+            expect(card.operation).toBe("Sign in to the registry");
+            expect(card.status).toBe("success");
+            expect(card.message).toContain("signed in as brigade-tester");
+            expect(card.assets).toEqual([]);
+        } finally {
+            await signedIn.close();
+        }
+
+        // The guided fallback: nothing failed, there is just no browser flow.
+        const guided = await connect({ env: { FACET_DIR: facetDir, FACET_REGISTRY_URL: "https://api.example.test" } });
+        try {
+            const card = cardOf((await guided.client.callTool({ name: "facet_login" })) as CallToolResult);
+            expect(card.facet).toBe("api.example.test");
+            expect(card.operation).toBe("Sign in to the registry");
+            expect(card.status).toBe("success");
+            expect(card.message).toContain("/settings/tokens");
+        } finally {
+            await guided.close();
+        }
+
+        // And a sign-in that really did fail.
+        const refused = await connect({ openBrowser: browserThatRedirects({ error: "access_denied" }).openBrowser });
+        try {
+            const card = cardOf((await refused.client.callTool({ name: "facet_login" })) as CallToolResult);
+            expect(card.facet).toBe("api.example.test");
+            expect(card.operation).toBe("Sign in to the registry");
+            expect(card.status).toBe("error");
+        } finally {
+            await refused.close();
+        }
+    }, 20_000);
+
+    test("a registry URL that is not a URL still names something on the card", async () => {
+        // `FACET_REGISTRY_URL` is whatever the environment says. Junk in it must
+        // not leave the card with a blank title, which the panel reads as unknown.
+        const harness = await connect({ env: { FACET_DIR: facetDir, FACET_REGISTRY_URL: "not a url at all" } });
+        try {
+            const card = cardOf((await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult);
+            expect(card.facet.trim()).not.toBe("");
+            expect(card.facet).not.toBe("Unknown facet");
+        } finally {
+            await harness.close();
+        }
+    });
+
     test("facet_whoami repeats nothing from a hostile profile", async () => {
         // The whole hostile-registry story, end to end through the tool: the
         // profile is a token, and none of it may appear in either half of what
@@ -1024,6 +1133,19 @@ describe("the tools", () => {
             expect(everything).not.toContain(FAKE_PAT);
             expect(everything).not.toContain("PQRSTUVWXYZ23456789");
             expect(everything).toContain("tier: free");
+
+            // And the same again for the card, field by field. The username is
+            // the one the panel puts in the headline, so a token smuggled into
+            // it would be the most prominent thing on screen.
+            const card = cardOf(result);
+            const drawn = JSON.stringify(card);
+            expect(drawn).not.toContain("fct_pub_");
+            expect(drawn).not.toContain(FAKE_PAT);
+            expect(drawn).not.toContain("PQRSTUVWXYZ23456789");
+            expect(card.facet).toBe("[redacted]");
+            expect(card.facet).not.toBe("Unknown facet");
+            expect(card.operation).toBe("Registry identity");
+            expect(card.assets).toEqual([]);
         } finally {
             await harness.close();
         }
@@ -1043,6 +1165,15 @@ describe("the tools", () => {
             expect(everything).not.toContain("eyJ");
             expect(everything).not.toContain(FAKE_JWT);
             expect(everything).toContain("owner [redacted]");
+
+            const card = cardOf(result);
+            const drawn = JSON.stringify(card);
+            expect(drawn).not.toContain("fct_pub_");
+            expect(drawn).not.toContain("eyJ");
+            expect(drawn).not.toContain(FAKE_JWT);
+            expect(card.facet).toBe("owner [redacted]");
+            expect(card.operation).toBe("Sign in to the registry");
+            expect(card.assets).toEqual([]);
         } finally {
             await harness.close();
         }
@@ -1076,8 +1207,34 @@ describe("the tools", () => {
             // Still a useful answer, not a blank one.
             expect(body).toContain("not signed in");
             expect(result.structuredContent).toMatchObject({ signedIn: false, mode: "fallback" });
+            expect(JSON.stringify(cardOf(result))).not.toContain("eyJ");
         } finally {
             await harness.close();
+        }
+    });
+
+    test("a registry whose host is itself token-shaped cannot title the card with it", async () => {
+        // With no account to name, the card falls back to the registry host —
+        // environment data, and the one panel field that lands in the headline.
+        //
+        // The case-insensitive checks are the point of this test. `new URL`
+        // lowercases a host, and the JWT backstop matches `eyJ` exactly, so a
+        // token-shaped hostname comes out of the parser already folded and
+        // sails past a scrubber that would have caught what was set. Checking
+        // only for `eyJ` here would have watched that happen and said nothing.
+        for (const host of [`${FAKE_JWT}.example.test`, "fct_pub_ABCDEFGHJKMN.example.test"]) {
+            const harness = await connect({ env: { FACET_DIR: facetDir, FACET_REGISTRY_URL: `https://${host}` } });
+            try {
+                const card = cardOf((await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult);
+                const folded = card.facet.toLowerCase();
+                expect(folded).not.toContain("eyj");
+                expect(folded).not.toContain("fct_pub_");
+                expect(folded).not.toContain(FAKE_JWT.toLowerCase());
+                expect(card.facet).toContain("[redacted]");
+                expect(card.facet).not.toBe("Unknown facet");
+            } finally {
+                await harness.close();
+            }
         }
     });
 

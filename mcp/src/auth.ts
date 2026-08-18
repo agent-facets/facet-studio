@@ -923,6 +923,93 @@ export function notSignedInMessage(config: AuthConfig): string {
 }
 
 // ---------------------------------------------------------------------------
+// The card the panel draws
+// ---------------------------------------------------------------------------
+
+/**
+ * The five fields the result panel reads, spelled exactly as the lifecycle tools
+ * in tools.ts spell them.
+ *
+ * Sign-in results ride the same view as everything else, so they have to fill in
+ * the same shape. Leave the fields out and the panel has nothing to go on: the
+ * card comes up titled "Unknown facet" with "Result" above it, which is both
+ * ugly and untrue. The names are written out here rather than imported from the
+ * view, so the server never drags the browser half of the panel into its module
+ * graph — the same reason tools.ts writes them out too.
+ */
+export interface AuthPanelCard {
+    facet: string;
+    operation: string;
+    status: "success" | "error";
+    message: string;
+    /** Always empty. Signing in makes no assets, and an invented row would be a lie. */
+    assets: never[];
+}
+
+/** What the card calls each tool, in the lifecycle tools' phrasing. */
+export const LOGIN_OPERATION = "Sign in to the registry";
+export const WHOAMI_OPERATION = "Registry identity";
+
+/** Shown when the registry URL is so mangled there is no host to pull out of it. */
+const UNNAMED_REGISTRY = "facet registry";
+
+/**
+ * The JWT shape again, this time blind to case. See {@link registryLabel} for
+ * why one field needs its own copy of a pattern the backstop already has.
+ */
+const JWT_ANY_CASE = /eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*){0,2}/gi;
+
+/**
+ * The registry's host, for the times there is no account to name.
+ *
+ * Two things about this value. It is environment data rather than registry data,
+ * so unlike an {@link Identity} it has never been near `sanitizeUntrusted` —
+ * that is fine on its own, because every card field leaves through `text()` and
+ * gets scrubbed there.
+ *
+ * The catch is that `new URL` lowercases a host on the way out, and the JWT
+ * backstop is deliberately case-sensitive: `eyJ` is what a JWT header base64s
+ * to, and `eyj` is not a JWT. So a token-shaped hostname would come out of the
+ * parser already case-folded, and sail past a scrubber that would have caught
+ * the string the environment actually set. Hence the case-blind pass right here,
+ * on the one value that goes through URL normalisation before it is printed. The
+ * token pattern needs no such help — `fct_pub_` is lowercase already and the
+ * rest of it never cared about case.
+ */
+export function registryLabel(registryUrl: string): string {
+    try {
+        const { host } = new URL(registryUrl);
+        if (host.length > 0) {
+            return host.replace(JWT_ANY_CASE, "[redacted]");
+        }
+    } catch {
+        // Not a URL we can parse. Whatever the environment set is still the
+        // truest thing we can say about where this call was pointed.
+    }
+    const raw = registryUrl.trim();
+    return raw.length > 0 ? raw : UNNAMED_REGISTRY;
+}
+
+/**
+ * Who the card is about: the account when we know it, the registry otherwise.
+ *
+ * Never blank, and that is the whole job — the panel reads an empty title as a
+ * missing one and falls straight back to "Unknown facet".
+ */
+function cardSubject(config: AuthConfig, username?: string): string {
+    const named = username?.trim() ?? "";
+    return named.length > 0 ? named : registryLabel(config.registryUrl);
+}
+
+/**
+ * The card fields for one finished call. `message` is the same prose the text
+ * content carries, so the two halves of a reply always say the same thing.
+ */
+function card(operation: string, subject: string, status: "success" | "error", message: string): AuthPanelCard {
+    return { facet: subject, operation, status, message, assets: [] };
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -1062,11 +1149,18 @@ export function registerAuth(server: McpServer, deps: AuthDeps): void {
             const config = readAuthConfig(ports.env, ports.home);
 
             if (!config.browserFlowAvailable) {
-                return text(fallbackMessage(config), { signedIn: false, mode: "fallback", registryUrl: config.registryUrl });
+                const body = fallbackMessage(config);
+                return text(body, {
+                    signedIn: false,
+                    mode: "fallback",
+                    registryUrl: config.registryUrl,
+                    ...card(LOGIN_OPERATION, cardSubject(config), "success", body),
+                });
             }
             try {
                 const success = await runBrowserLogin(config, ports);
-                return text(signedInMessage(success), {
+                const body = signedInMessage(success);
+                return text(body, {
                     signedIn: true,
                     mode: "browser",
                     username: success.username,
@@ -1074,10 +1168,22 @@ export function registerAuth(server: McpServer, deps: AuthDeps): void {
                     tier: success.tier,
                     suspended: success.suspended,
                     registryUrl: config.registryUrl,
+                    ...card(LOGIN_OPERATION, cardSubject(config, success.username), "success", body),
                 });
             } catch (error) {
                 const reason = scrubSecrets(messageOf(error));
-                return text(fallbackMessage(config, reason), { signedIn: false, mode: "fallback", reason, registryUrl: config.registryUrl }, true);
+                const body = fallbackMessage(config, reason);
+                return text(
+                    body,
+                    {
+                        signedIn: false,
+                        mode: "fallback",
+                        reason,
+                        registryUrl: config.registryUrl,
+                        ...card(LOGIN_OPERATION, cardSubject(config), "error", body),
+                    },
+                    true,
+                );
             }
         },
     );
@@ -1094,7 +1200,13 @@ export function registerAuth(server: McpServer, deps: AuthDeps): void {
             const config = readAuthConfig(ports.env, ports.home);
             const credential = resolveCredential(config);
             if (credential.kind === "absent") {
-                return text(notSignedInMessage(config), { signedIn: false, mode: "fallback", registryUrl: config.registryUrl });
+                const body = notSignedInMessage(config);
+                return text(body, {
+                    signedIn: false,
+                    mode: "fallback",
+                    registryUrl: config.registryUrl,
+                    ...card(WHOAMI_OPERATION, cardSubject(config), "success", body),
+                });
             }
             const where = credential.kind === "env" ? "FACET_TOKEN (environment)" : config.credentialsPath;
             try {
@@ -1114,12 +1226,27 @@ export function registerAuth(server: McpServer, deps: AuthDeps): void {
                     tier: identity.tier,
                     suspended: identity.suspended,
                     registryUrl: config.registryUrl,
+                    ...card(WHOAMI_OPERATION, cardSubject(config, identity.username), "success", body),
                 });
             } catch (error) {
                 const reason = scrubSecrets(messageOf(error), [credential.token]);
+                const body = [
+                    `facet studio · couldn't check the saved credential`,
+                    "",
+                    `  credential: ${where}`,
+                    `  problem: ${reason}`,
+                    "",
+                    fallbackMessage(config),
+                ].join("\n");
                 return text(
-                    [`facet studio · couldn't check the saved credential`, "", `  credential: ${where}`, `  problem: ${reason}`, "", fallbackMessage(config)].join("\n"),
-                    { signedIn: false, mode: credential.kind, reason, registryUrl: config.registryUrl },
+                    body,
+                    {
+                        signedIn: false,
+                        mode: credential.kind,
+                        reason,
+                        registryUrl: config.registryUrl,
+                        ...card(WHOAMI_OPERATION, cardSubject(config), "error", body),
+                    },
                     true,
                 );
             }
