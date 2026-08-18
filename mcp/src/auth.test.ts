@@ -34,7 +34,9 @@ import {
     runBrowserLogin,
     sanitizeUntrusted,
     SCRUB_MAX_DEPTH,
+    SCRUB_MAX_NODES,
     SCRUB_OMITTED,
+    SCRUB_TRUNCATED,
     scrubSecrets,
     scrubStructured,
     startLoopback,
@@ -599,14 +601,70 @@ describe("secrets never reach the transcript", () => {
         expect(scrubSecrets("nothing to see")).toBe("nothing to see");
     });
 
-    test("scrubSecrets catches half a token as readily as a whole one", () => {
-        // Truncated by a log line, cut off by a field limit, split across a
-        // wrapped line — a fragment is still enough to be worth hiding, and
-        // the fragment is what usually escapes.
-        expect(scrubSecrets("prefix fct_pub_ABCDEFGHJKMN only")).toBe("prefix [redacted] only");
-        expect(scrubSecrets("bare fct_pub_ here")).toBe("bare [redacted] here");
-        expect(scrubSecrets(`header-only ${FAKE_JWT.split(".")[0] as string}`)).toBe("header-only [redacted]");
+    test("scrubSecrets leaves alone words that merely start like a credential", () => {
+        // What makes a string a secret is the secret half: the part after the
+        // PAT's dot, the segments after the JWT's header. Firing on the prefix
+        // alone erased ordinary text — a page called `fct_pub_documentation`, a
+        // username that happens to begin `eyJ` — which is a real cost paid on
+        // real input for no protection at all, since neither of these carries a
+        // secret to protect.
+        expect(scrubSecrets("fct_pub_documentation")).toBe("fct_pub_documentation");
+        expect(scrubSecrets("see fct_pub_documentation for details")).toBe("see fct_pub_documentation for details");
+        expect(scrubSecrets("eyJabcdefghij")).toBe("eyJabcdefghij");
+        expect(scrubSecrets("user eyJabcdefghij signed in")).toBe("user eyJabcdefghij signed in");
+        expect(scrubSecrets("bare fct_pub_ here")).toBe("bare fct_pub_ here");
+        // A JWT header on its own is public base64 of `{"alg":...}` and carries
+        // no claims and no signature — the same class of thing as the above.
+        expect(scrubSecrets(`header-only ${FAKE_JWT.split(".")[0] as string}`)).toBe(
+            `header-only ${FAKE_JWT.split(".")[0] as string}`,
+        );
+    });
+
+    test("scrubSecrets still catches a token that lost its tail", () => {
+        // Narrowing the patterns must not turn into a hole. Anything carrying
+        // the secret half is still redacted, whole or truncated, and a JWT that
+        // lost only its signature is still a JWT.
+        expect(scrubSecrets(`saved ${FAKE_PAT} ok`)).toBe("saved [redacted] ok");
         expect(scrubSecrets(`two parts ${FAKE_JWT.split(".").slice(0, 2).join(".")}`)).toBe("two parts [redacted]");
+        expect(scrubSecrets(`unsigned ${FAKE_JWT.split(".").slice(0, 2).join(".")}.`)).toBe("unsigned [redacted]");
+        // A secret cut off mid-way is still the start of a secret.
+        expect(scrubSecrets(`cut ${FAKE_PAT.slice(0, 30)}`)).toBe("cut [redacted]");
+        // And a long secret is redacted to its end, not just for a while.
+        expect(scrubSecrets(`fct_pub_ABCDEFGHJKMN.${"S".repeat(4_000)}`)).toBe("[redacted]");
+        expect(scrubSecrets(`eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhIn0.${"S".repeat(4_000)}`)).toBe("[redacted]");
+    });
+
+    test("the backstop is never narrower than the gate that accepts a token", async () => {
+        // These two are built from one grammar in auth.ts, and this is the
+        // property that matters: there must be no string the server would take
+        // from the registry and use as a credential but would not redact. So a
+        // token at the very edge of what the gate accepts is checked both ways.
+        const minimal = "fct_pub_ABCD.EFGH";
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        handlers["/v0/auth/tokens"] = () => json({ prefix: "ABCD", plaintext_token: minimal }, 201);
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+        await runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser }));
+        expect(readCredentialsFile(config.credentialsPath)).toBe(minimal);
+        expect(scrubSecrets(`saved ${minimal} ok`)).toBe("saved [redacted] ok");
+    });
+
+    test("a token below the grammar's minimum is refused rather than quietly kept", async () => {
+        // The other side of the same property: what the backstop will not
+        // redact, the gate will not accept.
+        for (const rejected of ["fct_pub_ABC.DEFG", "fct_pub_ABCD.EFG", "fct_pub_ABCDEFGHJKMN"]) {
+            const browser = browserThatRedirects();
+            const handlers = happyHandlers();
+            handlers["/v0/auth/tokens"] = () => json({ plaintext_token: rejected }, 201);
+            const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+            await expect(
+                runBrowserLogin(config, ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser })),
+            ).rejects.toThrow(/shape this server doesn't recognise/);
+            expect(existsSync(config.credentialsPath)).toBe(false);
+            expect(scrubSecrets(rejected)).toBe(rejected);
+        }
     });
 
     test("sanitizeUntrusted flattens, scrubs, and truncates whatever it is handed", () => {
@@ -849,6 +907,71 @@ describe("the structured scrub reaches the whole payload", () => {
         expect(everything).toContain("[redacted]");
         expect(out.signedIn).toBe(true);
     }, 30_000);
+
+    test("a hundred thousand elements come back bounded, not copied out one by one", () => {
+        // The budget used to stop the redacting but not the walking: every
+        // element past it was still visited and still written out, so a
+        // 100,000-element array produced a 100,000-element reply of which
+        // 95,001 entries were the word "[omitted]". Bounded in what it revealed,
+        // unbounded in what it cost and in what it sent. Now the walk stops and
+        // the remainder is one marker, so the size of the answer is set by the
+        // budget rather than by whatever the payload chose to be.
+        const many = Array.from({ length: 100_000 }, (_, i) => (i === 99_999 ? FAKE_PAT : `item ${i}`));
+        const started = performance.now();
+        const out = scrubStructured({ many });
+        const elapsed = performance.now() - started;
+
+        const list = out.many as unknown[];
+        expect(Array.isArray(list)).toBe(true);
+        expect(list.length).toBeLessThanOrEqual(SCRUB_MAX_NODES + 1);
+        expect(list.at(-1)).toBe(SCRUB_TRUNCATED);
+        expect(JSON.stringify(out).length).toBeLessThan(JSON.stringify({ many }).length / 10);
+        // The secret sat past the budget, so it was dropped rather than carried.
+        expect(JSON.stringify(out)).not.toContain("fct_pub_");
+        expect(JSON.stringify(out)).not.toContain(FAKE_PAT);
+        expect(elapsed).toBeLessThan(1_000);
+    }, 30_000);
+
+    test("a hundred thousand keys come back bounded too", () => {
+        // The top-level loop had no budget check at all, so a wide object was
+        // walked key by key however long the list ran.
+        const wide: Record<string, unknown> = {};
+        for (let i = 0; i < 100_000; i += 1) wide[`k${i}`] = i === 99_999 ? FAKE_PAT : `v${i}`;
+
+        const started = performance.now();
+        const out = scrubStructured(wide);
+        const elapsed = performance.now() - started;
+
+        expect(Object.keys(out).length).toBeLessThanOrEqual(SCRUB_MAX_NODES + 1);
+        expect(out[SCRUB_TRUNCATED]).toBe(SCRUB_TRUNCATED);
+        expect(JSON.stringify(out)).not.toContain("fct_pub_");
+        expect(elapsed).toBeLessThan(1_000);
+    }, 30_000);
+
+    test("a real PAT and a real JWT are redacted at the top level and nested", () => {
+        const out = scrubStructured({
+            token: FAKE_PAT,
+            jwt: FAKE_JWT,
+            deeper: { list: [{ token: FAKE_PAT }, { jwt: `bearer ${FAKE_JWT}` }] },
+        });
+        expect(out).toEqual({
+            token: "[redacted]",
+            jwt: "[redacted]",
+            deeper: { list: [{ token: "[redacted]" }, { jwt: "bearer [redacted]" }] },
+        });
+    });
+
+    test("legitimate prefix-like text comes through the walk untouched", () => {
+        // The other half of the job. A username, a page name and a note that
+        // merely begin like a credential are ordinary data, and erasing them
+        // would be a bug the user sees on every good day rather than a bad one.
+        const payload = {
+            username: "eyJabcdefghij",
+            page: "fct_pub_documentation",
+            notes: ["see fct_pub_documentation", { who: "eyJabcdefghij" }],
+        };
+        expect(scrubStructured(payload)).toEqual(payload);
+    });
 });
 
 describe("the tools", () => {

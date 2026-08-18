@@ -57,8 +57,26 @@ export const TOKEN_NAME = "facet-studio";
 export const TOKEN_SCOPES = ["publish:*"];
 export const TOKEN_EXPIRES_IN_DAYS = 90;
 
+/**
+ * The grammar of a personal access token, written once and used twice: to
+ * decide whether a token the registry handed us is one we recognise, and to
+ * find one in text we are about to print. Both halves are alphanumeric and both
+ * are required, because the secret is the half after the dot — a `fct_pub_`
+ * with nothing behind it is a word, not a credential.
+ *
+ * The four-character minimums are far below anything the registry issues (its
+ * prefixes are twelve characters and its secrets thirty-two). They are only
+ * there to keep the redaction backstop off ordinary words, and they are the
+ * same on both sides of the pair on purpose: if the backstop were ever narrower
+ * than the check that accepts a token, there would be tokens this server would
+ * happily use and quietly print.
+ */
+const PAT_PREFIX = String.raw`[A-Za-z0-9]{4,}`;
+const PAT_SECRET = String.raw`[A-Za-z0-9]{4,}`;
+const PAT_GRAMMAR = String.raw`fct_pub_${PAT_PREFIX}\.${PAT_SECRET}`;
+
 /** Shape of a personal access token: `fct_pub_<prefix>.<secret>`. */
-const PAT_SHAPE = /^fct_pub_[A-Za-z0-9]+\.[A-Za-z0-9]+$/;
+const PAT_SHAPE = new RegExp(String.raw`^${PAT_GRAMMAR}$`);
 
 /** Everything the flow touches that isn't pure computation. Tests swap these. */
 export interface AuthPorts {
@@ -170,12 +188,27 @@ function stripTrailingSlashes(value: string): string {
 // Keeping secrets out of everything we say
 // ---------------------------------------------------------------------------
 
-// Both patterns are deliberately wider than the real thing. A half-copied token
-// is still a token: `fct_pub_` followed by anything token-shaped goes, whether
-// or not the secret half made it into the string, and the same for a JWT that
-// only kept its header. Redacting a little too much costs nobody anything.
-const PAT_ANYWHERE = /fct_pub_[A-Za-z0-9]*(?:\.[A-Za-z0-9]*)?/g;
-const JWT_ANYWHERE = /eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*){0,2}/g;
+// Both patterns look for the real grammar rather than for a prefix. Redacting
+// too much is not free after all: these run over usernames, error bodies and
+// registry prose, so a pattern that fires on any word beginning `fct_pub_`
+// erases `fct_pub_documentation`, and one that fires on any word beginning
+// `eyJ` erases a person's username. What makes a string a credential is the
+// part that is secret — the half after the PAT's dot, the segments after the
+// JWT's header — so that is what both patterns insist on seeing.
+const PAT_ANYWHERE = new RegExp(PAT_GRAMMAR, "g");
+
+// A JWT is base64url segments joined by dots: a header that always starts `eyJ`
+// (base64 of `{"`), then the claims, then the signature. Header and claims are
+// both required; the signature is optional so that a token cut short by a line
+// wrap is still caught, and so is one from an issuer that signed with `none`.
+//
+// Neither pattern has an upper bound on a segment, and that is deliberate. A
+// capped segment matched only the first N characters of a longer secret and
+// left the tail in the clear — and with a trailing boundary check, it stopped
+// matching such a secret at all. Both failures leak. Unbounded, the worst a
+// hostile string can do is cost one linear scan.
+const JWT_GRAMMAR = String.raw`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?`;
+const JWT_ANYWHERE = new RegExp(JWT_GRAMMAR, "g");
 
 /** Anything that has no business being in a line of text we show or send. */
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
@@ -954,10 +987,10 @@ export const WHOAMI_OPERATION = "Registry identity";
 const UNNAMED_REGISTRY = "facet registry";
 
 /**
- * The JWT shape again, this time blind to case. See {@link registryLabel} for
+ * The same JWT grammar, this time blind to case. See {@link registryLabel} for
  * why one field needs its own copy of a pattern the backstop already has.
  */
-const JWT_ANY_CASE = /eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*){0,2}/gi;
+const JWT_ANY_CASE = new RegExp(JWT_GRAMMAR, "gi");
 
 /**
  * The registry's host, for the times there is no account to name.
@@ -1044,12 +1077,28 @@ function text(body: string, structured: Record<string, unknown>, isError = false
     };
 }
 
-/** How deep the structured walk will go, and how many values it will look at. */
+/**
+ * How deep the structured walk will go, and how many values it will look at.
+ *
+ * A real reply here is a handful of flat fields, so ten or so values and three
+ * levels covers everything this server actually sends; the limits are set well
+ * above that and exist for whatever a hostile registry sends instead. Five
+ * thousand values is the ceiling on the work one reply can cost us — and, since
+ * the walk stops rather than keeps copying, on the size of what comes out.
+ */
 export const SCRUB_MAX_DEPTH = 8;
 export const SCRUB_MAX_NODES = 5_000;
 
 /** What a value past those limits turns into, rather than being passed through. */
 export const SCRUB_OMITTED = "[omitted]";
+
+/**
+ * What stands in for the rest of a list or object once the budget runs out.
+ *
+ * It reads as an omission because that is what it is, and it says which kind:
+ * everything from here on was never looked at.
+ */
+export const SCRUB_TRUNCATED = `${SCRUB_OMITTED} (truncated)`;
 
 /**
  * Scrubs every string anywhere in a structured payload, not just the top row.
@@ -1066,14 +1115,43 @@ export const SCRUB_OMITTED = "[omitted]";
  * an unchecked value along is the one outcome worth avoiding. The same goes for
  * a cycle — an object that contains itself is replaced where it repeats.
  *
- * Real payloads here are a handful of flat fields, so the limits never come
- * near them. They exist for whatever arrives on a bad day.
+ * When the budget runs out the walk *stops*. It used to keep going and write
+ * `[omitted]` into every remaining slot, which meant a hundred-thousand-element
+ * array still cost a hundred thousand steps and still produced a
+ * hundred-thousand-element reply — bounded in what it revealed, but not in what
+ * it cost or in how much it sent. Now the rest of the list or object is dropped
+ * and a single {@link SCRUB_TRUNCATED} marker takes its place, so the size of
+ * what comes out is capped by the budget rather than by what was sent in.
  */
 export function scrubStructured(structured: Record<string, unknown>): Record<string, unknown> {
     const budget = { nodes: SCRUB_MAX_NODES };
+    return scrubEntries(structured, SCRUB_MAX_DEPTH, budget, new Set());
+}
+
+/**
+ * Scrubs an object's own string-keyed properties, stopping at the budget.
+ *
+ * `depth` is what the *values* get, which is how the top-level call and the
+ * recursive one can share this without shifting the depth limit by a level.
+ *
+ * The loop is a `for...in` rather than `Object.entries` so that a hostile
+ * object with a hundred thousand keys doesn't cost us an array of a hundred
+ * thousand entries before we have looked at even one of them.
+ */
+function scrubEntries(
+    source: Record<string, unknown>,
+    depth: number,
+    budget: { nodes: number },
+    onPath: Set<object>,
+): Record<string, unknown> {
     const out: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(structured)) {
-        out[scrubSecrets(key)] = scrubValue(value, SCRUB_MAX_DEPTH, budget, new Set());
+    for (const key in source) {
+        if (!Object.hasOwn(source, key)) continue;
+        if (budget.nodes <= 0) {
+            out[SCRUB_TRUNCATED] = SCRUB_TRUNCATED;
+            break;
+        }
+        out[scrubSecrets(key)] = scrubValue(source[key], depth, budget, onPath);
     }
     return out;
 }
@@ -1089,13 +1167,17 @@ function scrubValue(value: unknown, depth: number, budget: { nodes: number }, on
     onPath.add(value);
     try {
         if (Array.isArray(value)) {
-            return value.map(item => scrubValue(item, depth - 1, budget, onPath));
+            const out: unknown[] = [];
+            for (const item of value) {
+                if (budget.nodes <= 0) {
+                    out.push(SCRUB_TRUNCATED);
+                    break;
+                }
+                out.push(scrubValue(item, depth - 1, budget, onPath));
+            }
+            return out;
         }
-        const out: Record<string, unknown> = {};
-        for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-            out[scrubSecrets(key)] = scrubValue(item, depth - 1, budget, onPath);
-        }
-        return out;
+        return scrubEntries(value as Record<string, unknown>, depth - 1, budget, onPath);
     } finally {
         onPath.delete(value);
     }
