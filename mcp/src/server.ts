@@ -1,14 +1,25 @@
 // The facet-studio MCP server.
 //
-// This file owns three things and nothing else: the server's identity, the
-// capability handshake with the host, and the single seam (`registerAll`) where
-// tools, panels, and auth get wired in. The tools themselves live in ./tools,
-// ./auth, and ./view/panel — this file only calls their registrars.
+// This file owns four things and nothing else: the server's identity, the
+// capability handshake with the host, the single seam (`registerAll`) where
+// tools, panels, and auth get wired in, and what happens when that seam fails —
+// the server stops answering rather than serve a surface it never finished
+// building. The tools themselves live in ./tools, ./auth, and ./view/panel;
+// this file only calls their registrars.
 
 import { getUiCapability } from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import {
+    CallToolRequestSchema,
+    ErrorCode,
+    ListResourceTemplatesRequestSchema,
+    ListResourcesRequestSchema,
+    ListToolsRequestSchema,
+    McpError,
+    ReadResourceRequestSchema,
+    type ClientCapabilities,
+} from "@modelcontextprotocol/sdk/types.js";
 import { pathToFileURL } from "node:url";
 import { registerAuth } from "./auth.js";
 import { registerTools } from "./tools.js";
@@ -64,7 +75,8 @@ export interface StudioServerDeps {
     registerAll?: RegisterAll;
     /**
      * Told about a registrar that threw, so a host or a test can see it.
-     * Defaults to a line on stderr.
+     * Defaults to a line on stderr. This is only where the news goes — it has
+     * no say in what happens next, and the server stops serving either way.
      */
     onRegistrationError?: (failure: RegistrationFailure) => void;
 }
@@ -90,13 +102,18 @@ export interface RegistrationDeps extends StudioServerDeps {
 export type RegisterAll = (server: McpServer, deps: RegistrationDeps) => void;
 
 /**
- * Runs one registrar and keeps its failure to itself, handing the failure back
- * instead of throwing it.
+ * The opening words of every refusal, and the thing to look for when checking
+ * that a server really did stop serving rather than come up empty.
+ */
+export const NOT_SERVING = "facet-studio is not serving";
+
+/**
+ * Runs one registrar and hands its failure back instead of letting it fly.
  *
- * That is the whole job. All of this runs inside `oninitialized`, where a throw
- * has nowhere to go: it would abandon every registrar queued behind it and
- * leave the host talking to a server that is missing half its surface, with
- * nothing said about why.
+ * Holding the throw here is what lets the registrars behind it still get their
+ * turn, so one call can collect every casualty rather than only the first. It
+ * is not the same as forgiving the failure — every caller below either reports
+ * what comes back or acts on it.
  */
 function contain(registrar: string, run: () => void): RegistrationFailure | undefined {
     try {
@@ -107,10 +124,70 @@ function contain(registrar: string, run: () => void): RegistrationFailure | unde
     }
 }
 
+/** How a failure reads in a sentence: "the tools registrar", "the registration seam". */
+function nameOf(registrar: string): string {
+    return registrar === "registration" ? "the registration seam" : `the ${registrar} registrar`;
+}
+
+/** The shortest true sentence about why something threw. */
+function reasonFor(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+/** "the panel registrar failed: Cannot register capabilities after connecting" */
+function describe(failure: RegistrationFailure): string {
+    return `${nameOf(failure.registrar)} failed: ${reasonFor(failure.error)}`;
+}
+
 /** Where a registration failure goes when the caller supplied no handler. */
-function reportRegistrationFailure({ registrar, error }: RegistrationFailure): void {
+function reportRegistrationFailure(failure: RegistrationFailure): void {
     // stdout is the protocol channel, so diagnostics go to stderr.
-    console.error(`facet-studio: the ${registrar} registrar failed; serving without it:`, error);
+    console.error(`facet-studio: ${describe(failure)}`, failure.error);
+}
+
+/**
+ * The requests this server would answer if registration had gone well.
+ *
+ * It is the exact list of methods covered by the two capabilities primed in
+ * {@link createServer} — tools and resources — because those are the only ones
+ * the SDK will even let us install a handler for. Prime a third capability
+ * there and its methods belong here too.
+ */
+const SERVED_REQUESTS = [
+    ListToolsRequestSchema,
+    CallToolRequestSchema,
+    ListResourcesRequestSchema,
+    ListResourceTemplatesRequestSchema,
+    ReadResourceRequestSchema,
+] as const;
+
+/**
+ * Stops the server answering, and makes every answer say why.
+ *
+ * The handshake is already over by the time registration runs, so the
+ * connection cannot be refused — but what the server does with it afterwards is
+ * still ours. An empty tool list is a lie a host cannot see through: it looks
+ * exactly like a server that legitimately has nothing to offer. An error naming
+ * the registrar that failed and the reason it failed is something the host, or
+ * the person reading its logs, can act on.
+ *
+ * Every existing handler is replaced, and anything else that arrives gets the
+ * same treatment through the fallback, so no route back into a half-built
+ * surface is left open.
+ */
+function refuseToServe(server: McpServer, failure: RegistrationFailure): void {
+    const message = `${NOT_SERVING}: ${describe(failure)}`;
+    const refuse = (): never => {
+        throw new McpError(ErrorCode.InternalError, message);
+    };
+
+    for (const schema of SERVED_REQUESTS) {
+        server.server.setRequestHandler(schema, refuse);
+    }
+    server.server.fallbackRequestHandler = refuse;
+
+    // stdout is the protocol channel, so diagnostics go to stderr.
+    console.error(message);
 }
 
 /**
@@ -120,10 +197,11 @@ function reportRegistrationFailure({ registrar, error }: RegistrationFailure): v
  * carries the host's capabilities: registration can differ between a host that
  * renders UI and one that doesn't.
  *
- * Each registrar runs inside {@link contain}, so one of them blowing up costs
- * the host that one piece of the surface rather than every piece registered
- * after it. Whatever failed is reported — a server quietly missing its tools is
- * the expensive version of this bug.
+ * Each registrar runs inside {@link contain}, so one of them blowing up doesn't
+ * rob the ones behind it of their turn — every casualty gets named, not just
+ * the first. Each is reported as it happens, and then the whole set is thrown
+ * as one error for the caller to act on. Nothing is swallowed: a server that
+ * came up missing half its surface and said nothing is the bug this prevents.
  *
  * The order still matters. The panel is the only one that touches resources
  * (the riskier registration, since resource capabilities have to be primed
@@ -148,10 +226,16 @@ export function registerAll(server: McpServer, deps: RegistrationDeps): void {
     ];
 
     const report = deps.onRegistrationError ?? reportRegistrationFailure;
-    for (const failure of failures) {
-        if (failure !== undefined) {
-            report(failure);
-        }
+    const failed = failures.filter((failure): failure is RegistrationFailure => failure !== undefined);
+    for (const failure of failed) {
+        report(failure);
+    }
+
+    if (failed.length > 0) {
+        throw new AggregateError(
+            failed.map(failure => failure.error),
+            failed.map(describe).join("; "),
+        );
     }
 }
 
@@ -176,6 +260,14 @@ export function createServer(deps: StudioServerDeps = {}): McpServer {
     // Nothing catches a throw from here — the SDK just loses it — so the seam is
     // contained too, not only the registrars inside it. An injected seam, or the
     // capability lookup itself, can fail just as easily as a registrar can.
+    //
+    // And this is where the policy lives: if anything at all went wrong, the
+    // server stops answering. A half-registered server is worse than no server,
+    // because the host sees a connection that works and a surface that is
+    // missing pieces, with no way to tell the difference from a server that
+    // simply has less to offer. Note what does NOT count as going wrong — a
+    // registrar that bows out because the host can't use what it offers, like
+    // the panel facing a text-only host, returns normally and is not a failure.
     server.server.oninitialized = () => {
         const failure = contain("registration", () => {
             const clientCapabilities = server.server.getClientCapabilities();
@@ -189,6 +281,7 @@ export function createServer(deps: StudioServerDeps = {}): McpServer {
         });
         if (failure !== undefined) {
             (deps.onRegistrationError ?? reportRegistrationFailure)(failure);
+            refuseToServe(server, failure);
         }
     };
 

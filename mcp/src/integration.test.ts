@@ -22,6 +22,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+    NOT_SERVING,
     VIEW_SCRIPT_BANNER,
     createServer,
     registerAll,
@@ -457,18 +458,27 @@ describe("a real tool result, through the real renderer", () => {
 });
 
 // ---------------------------------------------------------------------------
-// One registrar failing must not take the rest of the server with it
+// A server that cannot register its surface must not serve
 // ---------------------------------------------------------------------------
 //
-// Registration happens inside `oninitialized`, where a throw has nowhere to go.
-// Before this was contained, one registrar blowing up meant every registrar
-// behind it silently never ran, and the host was handed a server missing half
-// its surface with nothing said about why.
+// Registration runs inside `oninitialized`, after the handshake has already
+// been answered, so the connection itself can no longer be refused. What the
+// server can do — and now does — is refuse to answer. The failure mode being
+// replaced here was the expensive one: a host connects, the handshake looks
+// healthy, `tools/list` comes back empty, and nothing anywhere says why.
+//
+// Two layers, kept apart on purpose, and the tests below check them separately:
+//
+//   * `registerAll` still gives every registrar its turn and still reports each
+//     one that threw, so the diagnostic is complete — then it propagates a
+//     single error naming all of them instead of returning as if nothing broke.
+//   * `createServer` owns the policy. Any failure reaching it and the server
+//     stops answering: every request comes back with the reason.
 //
 // Making a registrar fail on purpose needs no stubs. The SDK refuses to add a
 // capability once a transport is attached, so a capability that was never
 // primed before connect is one whose registrar cannot succeed — which is how
-// each test below chooses its casualty.
+// the first two tests choose their casualty.
 
 /** Primes the tools listing the way createServer does, so tool registration can work. */
 function primeTools(server: McpServer): void {
@@ -486,8 +496,12 @@ function depsCollecting(failures: RegistrationFailure[]): RegistrationDeps {
 }
 
 /** Connects a real client to a server built by hand, and always closes both ends. */
-async function withBareServer(server: McpServer, body: (client: Client) => Promise<void>): Promise<void> {
-    const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities: UI_CAPABLE });
+async function withBareServer(
+    server: McpServer,
+    body: (client: Client) => Promise<void>,
+    capabilities: ClientCapabilities = UI_CAPABLE,
+): Promise<void> {
+    const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
@@ -498,8 +512,21 @@ async function withBareServer(server: McpServer, body: (client: Client) => Promi
     }
 }
 
+/**
+ * Runs the seam and hands back the error it propagated. Returning normally is
+ * itself the bug these tests exist to catch, so that fails on the spot.
+ */
+function seamFailure(server: McpServer, deps: RegistrationDeps): unknown {
+    try {
+        registerAll(server, deps);
+    } catch (error) {
+        return error;
+    }
+    throw new Error("registerAll returned normally when it should have propagated a failure");
+}
+
 describe("registration failures", () => {
-    test("a registrar that fails does not stop the ones queued behind it", async () => {
+    test("every registrar gets its turn, and the propagated error names each casualty", async () => {
         const server = new McpServer({ name: "facet-studio", version: "0.2.0" });
         // Resources primed, tools not: both tool registrars are doomed, and the
         // panel — which runs last — is the one that can still succeed.
@@ -507,35 +534,47 @@ describe("registration failures", () => {
         const failures: RegistrationFailure[] = [];
 
         await withBareServer(server, async client => {
-            registerAll(server, depsCollecting(failures));
+            const error = seamFailure(server, depsCollecting(failures));
 
             expect(failures.map(failure => failure.registrar)).toEqual(["tools", "auth"]);
-            // The point of the whole exercise: the panel still ran.
+            // One error, both casualties named in it, so whoever sees only the
+            // throw still learns everything the per-registrar reports said.
+            expect(String(error)).toContain("tools registrar");
+            expect(String(error)).toContain("auth registrar");
+            expect(String(error)).not.toContain("panel registrar");
+
+            // Why each registrar is still contained: the panel got its turn.
             const listed = await client.listResources();
             expect(listed.resources.map(resource => resource.uri)).toContain(PANEL_RESOURCE_URI);
         });
     });
 
-    test("a failing registrar costs its own surface and nothing else", async () => {
+    test("the propagated error carries the reason, not just the registrar's name", async () => {
         const server = new McpServer({ name: "facet-studio", version: "0.2.0" });
         // The mirror image: tools primed, resources not, so the panel is the
-        // casualty and every tool has to survive it.
+        // casualty and every tool registers fine behind it.
         primeTools(server);
         const failures: RegistrationFailure[] = [];
 
         await withBareServer(server, async client => {
-            registerAll(server, depsCollecting(failures));
+            const error = seamFailure(server, depsCollecting(failures));
 
             expect(failures).toHaveLength(1);
             expect(failures[0]?.registrar).toBe("panel");
             expect(String(failures[0]?.error)).toContain("Cannot register capabilities after connecting");
+            // Which registrar, and why, both readable off the one thrown error.
+            expect(String(error)).toContain("panel registrar");
+            expect(String(error)).toContain("Cannot register capabilities after connecting");
 
+            // This server was assembled by hand, not by createServer, so nothing
+            // has shut it down: the seam's job is to report and propagate, and
+            // deciding to stop serving belongs to createServer alone.
             const listed = await client.listTools();
             expect(listed.tools.map(tool => tool.name)).toEqual([...EXPECTED_TOOLS]);
         });
     });
 
-    test("a seam that throws outright still leaves a live, reachable server", async () => {
+    test("a seam that throws outright leaves a server that refuses to answer, and says why", async () => {
         const failures: RegistrationFailure[] = [];
         const server = createServer({
             registerAll: () => {
@@ -545,14 +584,65 @@ describe("registration failures", () => {
         });
 
         await withBareServer(server, async client => {
-            // The handshake completed rather than tearing the connection down,
-            // and the host can still talk to what is there.
+            // The handshake still completes — it was answered before
+            // registration ever ran, and there is no taking that back.
             expect(client.getServerVersion()).toMatchObject({ name: "facet-studio" });
-            await expect(client.listTools()).resolves.toMatchObject({ tools: [] });
+
+            // What must never happen again: an empty tool list served as if it
+            // were the truth. Every advertised surface now answers with the
+            // reason instead, and the reason reaches the host word for word.
+            await expect(client.listTools()).rejects.toThrow(NOT_SERVING);
+            await expect(client.listTools()).rejects.toThrow(/the seam exploded/);
+            await expect(client.callTool({ name: "facet_list", arguments: {} })).rejects.toThrow(/the seam exploded/);
+            await expect(client.listResources()).rejects.toThrow(/the seam exploded/);
+            await expect(client.readResource({ uri: PANEL_RESOURCE_URI })).rejects.toThrow(/the seam exploded/);
 
             expect(failures).toHaveLength(1);
             expect(failures[0]?.registrar).toBe("registration");
             expect(String(failures[0]?.error)).toContain("the seam exploded");
         });
+    });
+
+    test("a half-registered surface is refused too, not served in part", async () => {
+        // The case the policy is really about. Something did register before the
+        // throw, so the server has a surface it could serve — and serving it is
+        // the worst outcome of the three, because it looks complete and isn't.
+        const server = createServer({
+            registerAll: target => {
+                target.registerTool("facet_half", { description: "Registered before the failure." }, () => ({
+                    content: [],
+                }));
+                throw new Error("no keyring");
+            },
+            onRegistrationError: () => {},
+        });
+
+        await withBareServer(server, async client => {
+            await expect(client.listTools()).rejects.toThrow(/no keyring/);
+            await expect(client.callTool({ name: "facet_half", arguments: {} })).rejects.toThrow(/no keyring/);
+        });
+    });
+
+    test("a text-only host is not a registration failure", async () => {
+        // The gate that must survive the new policy. The panel registrar returns
+        // without registering anything when the host cannot render UI — that is
+        // the capability handshake working, not a broken registrar, and the
+        // server owes this host every tool it has.
+        const failures: RegistrationFailure[] = [];
+        const server = createServer({ onRegistrationError: failure => void failures.push(failure) });
+
+        await withBareServer(
+            server,
+            async client => {
+                const listed = await client.listTools();
+                expect(listed.tools.map(tool => tool.name)).toEqual([...EXPECTED_TOOLS]);
+
+                const resources = await client.listResources();
+                expect(resources.resources.map(resource => resource.uri)).not.toContain(PANEL_RESOURCE_URI);
+
+                expect(failures).toEqual([]);
+            },
+            TEXT_ONLY,
+        );
     });
 });
