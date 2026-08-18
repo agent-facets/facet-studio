@@ -592,7 +592,7 @@ export async function bootstrap(): Promise<App | undefined> {
         return undefined;
     }
 
-    const app = new App({ name: "facet-studio-panel", version: "0.2.0" });
+    const app = new App({ name: "facet-studio-panel", version: "0.3.0" });
 
     // Handlers go on before connect, or the first notification can slip past.
     app.ontoolresult = result => {
