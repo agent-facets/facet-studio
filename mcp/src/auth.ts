@@ -70,13 +70,16 @@ export const TOKEN_EXPIRES_IN_DAYS = 90;
  * same on both sides of the pair on purpose: if the backstop were ever narrower
  * than the check that accepts a token, there would be tokens this server would
  * happily use and quietly print.
+ *
+ * These three constants are the single source of that grammar. There is only
+ * one piece of code that reads it — `readPat` in the redaction section — and
+ * both users call that: `isTokenShaped` asks it whether a whole string is a
+ * token, and the scrubber asks it where the tokens are inside a paragraph. So
+ * the two can't drift apart.
  */
-const PAT_PREFIX = String.raw`[A-Za-z0-9]{4,}`;
-const PAT_SECRET = String.raw`[A-Za-z0-9]{4,}`;
-const PAT_GRAMMAR = String.raw`fct_pub_${PAT_PREFIX}\.${PAT_SECRET}`;
-
-/** Shape of a personal access token: `fct_pub_<prefix>.<secret>`. */
-const PAT_SHAPE = new RegExp(String.raw`^${PAT_GRAMMAR}$`);
+const PAT_MARKER = "fct_pub_";
+const PAT_MIN_PREFIX = 4;
+const PAT_MIN_SECRET = 4;
 
 /** Everything the flow touches that isn't pure computation. Tests swap these. */
 export interface AuthPorts {
@@ -188,27 +191,202 @@ function stripTrailingSlashes(value: string): string {
 // Keeping secrets out of everything we say
 // ---------------------------------------------------------------------------
 
-// Both patterns look for the real grammar rather than for a prefix. Redacting
+// Both searches look for the real grammar rather than for a prefix. Redacting
 // too much is not free after all: these run over usernames, error bodies and
-// registry prose, so a pattern that fires on any word beginning `fct_pub_`
-// erases `fct_pub_documentation`, and one that fires on any word beginning
-// `eyJ` erases a person's username. What makes a string a credential is the
-// part that is secret — the half after the PAT's dot, the segments after the
-// JWT's header — so that is what both patterns insist on seeing.
-const PAT_ANYWHERE = new RegExp(PAT_GRAMMAR, "g");
-
-// A JWT is base64url segments joined by dots: a header that always starts `eyJ`
-// (base64 of `{"`), then the claims, then the signature. Header and claims are
-// both required; the signature is optional so that a token cut short by a line
-// wrap is still caught, and so is one from an issuer that signed with `none`.
+// registry prose, so firing on any word beginning `fct_pub_` erases
+// `fct_pub_documentation`, and firing on any word beginning `eyJ` erases a
+// person's username. What makes a string a credential is the part that is
+// secret — the half after the PAT's dot, the segments after the JWT's header —
+// so that is what both searches insist on seeing.
 //
-// Neither pattern has an upper bound on a segment, and that is deliberate. A
+// Neither of them puts an upper bound on a segment, and that is deliberate. A
 // capped segment matched only the first N characters of a longer secret and
 // left the tail in the clear — and with a trailing boundary check, it stopped
-// matching such a secret at all. Both failures leak. Unbounded, the worst a
-// hostile string can do is cost one linear scan.
-const JWT_GRAMMAR = String.raw`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?`;
-const JWT_ANYWHERE = new RegExp(JWT_GRAMMAR, "g");
+// matching such a secret at all. Both failures leak.
+//
+// The searches are hand-written scans rather than regular expressions, and that
+// is the other half of the story. The obvious regex for a JWT — `eyJ`, then
+// eight or more base64url characters, then a dot — is quadratic on a run of
+// overlapping `eyJ` starts, because `e`, `y` and `J` are themselves base64url
+// characters: every start runs greedily to the end of the block, fails to find
+// its dot, and then gives the characters back one at a time. Measured on that
+// very pattern, 240 KB of `eyJeyJeyJ…` cost 9.1 seconds and each doubling of
+// the input cost four times as much — and an error body from a hostile registry
+// is exactly such a string. JavaScript has no atomic groups and no possessive
+// quantifiers, so there is no way to say "don't give those characters back" in
+// a regex here; the fix has to be structural. Hence the scan below, which looks
+// at each character a fixed number of times and cannot backtrack at all.
+
+/** What stands in for a credential once we have found one. */
+const REDACTED = "[redacted]";
+
+/** The three characters a JWT header always base64s to, from its leading `{"`. */
+const JWT_MARKER = "eyJ";
+
+/**
+ * How much header we want before believing an `eyJ` is a token.
+ *
+ * A JWT is base64url segments joined by dots: the header, the claims, then the
+ * signature. Header and claims are both required; the signature is optional, so
+ * that a token cut short by a line wrap is still caught, and so is one from an
+ * issuer that signed with `none`. Accepting two segments where a real JWT has
+ * three is deliberate: in the redaction direction, wider is safer.
+ */
+const JWT_MIN_HEADER = 8;
+
+/** The dot that separates a credential's public half from its secret one. */
+const DOT = 0x2e;
+
+/** Letters and digits: what a PAT is made of, on both sides of its dot. */
+function isPatChar(code: number): boolean {
+    return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
+
+/** base64url: letters, digits, minus, underscore. Dots separate the segments. */
+function isJwtChar(code: number): boolean {
+    return isPatChar(code) || code === 0x2d || code === 0x5f;
+}
+
+/**
+ * Where a run of `member` characters starting at `from` stops.
+ *
+ * Past the end of the string `charCodeAt` gives NaN, which no test accepts, so
+ * running off the end finishes a run the same way any other character would.
+ */
+function runEnd(text: string, from: number, member: (code: number) => boolean): number {
+    let at = from;
+    while (at < text.length && member(text.charCodeAt(at))) at += 1;
+    return at;
+}
+
+/**
+ * What one candidate turned out to be.
+ *
+ * `end` is where the credential stops, or {@link NO_CREDENTIAL} when the
+ * candidate wasn't one. `resume` is where the search picks up again, and it is
+ * what keeps the whole thing linear: a candidate that fails takes the characters
+ * it read down with it instead of being retried one position later, because
+ * those positions have to fail for the same reason.
+ */
+interface Candidate {
+    end: number;
+    resume: number;
+}
+
+const NO_CREDENTIAL = -1;
+
+/**
+ * A candidate that came to nothing, and where to look next.
+ *
+ * Everything from `start` up to `readTo` is ruled out except the last few
+ * characters, which could still be the start of a fresh marker running past
+ * what we read — so the search resumes a marker's length back from the end.
+ * That overlap is a constant, so re-reading it costs nothing over a whole
+ * string, and the resume point is always past `start`, so the loop always moves
+ * forward.
+ */
+function noCredential(start: number, readTo: number, marker: string): Candidate {
+    return { end: NO_CREDENTIAL, resume: Math.max(start + 1, readTo - marker.length + 1) };
+}
+
+/** Reads a PAT at `start`: `fct_pub_`, a prefix, a dot, then the secret half. */
+function readPat(text: string, start: number): Candidate {
+    const prefixFrom = start + PAT_MARKER.length;
+    const prefixTo = runEnd(text, prefixFrom, isPatChar);
+    if (prefixTo - prefixFrom < PAT_MIN_PREFIX || text.charCodeAt(prefixTo) !== DOT) {
+        return noCredential(start, prefixTo, PAT_MARKER);
+    }
+    const secretFrom = prefixTo + 1;
+    const secretTo = runEnd(text, secretFrom, isPatChar);
+    if (secretTo - secretFrom < PAT_MIN_SECRET) return noCredential(start, secretTo, PAT_MARKER);
+    return { end: secretTo, resume: secretTo };
+}
+
+/** Reads a JWT at `start`: header, dot, claims, and a signature if one follows. */
+function readJwt(text: string, start: number): Candidate {
+    const headerFrom = start + JWT_MARKER.length;
+    const headerTo = runEnd(text, headerFrom, isJwtChar);
+    if (headerTo - headerFrom < JWT_MIN_HEADER || text.charCodeAt(headerTo) !== DOT) {
+        return noCredential(start, headerTo, JWT_MARKER);
+    }
+    const claimsFrom = headerTo + 1;
+    const claimsTo = runEnd(text, claimsFrom, isJwtChar);
+    if (claimsTo === claimsFrom) return noCredential(start, claimsTo, JWT_MARKER);
+    if (text.charCodeAt(claimsTo) !== DOT) return { end: claimsTo, resume: claimsTo };
+    const signatureTo = runEnd(text, claimsTo + 1, isJwtChar);
+    return { end: signatureTo, resume: signatureTo };
+}
+
+/**
+ * True when the whole string is a token, which is the gate on what we save.
+ *
+ * Same reader the scrubber uses, asked a stricter question: does the token
+ * start at the first character and finish at the last? Sharing the reader is
+ * the point — there is no string this server would accept as a credential and
+ * then fail to redact, because one piece of code decides both.
+ */
+function isTokenShaped(value: string): boolean {
+    return value.startsWith(PAT_MARKER) && readPat(value, 0).end === value.length;
+}
+
+/**
+ * Finds the next marker at or after `from`, optionally blind to ASCII case.
+ *
+ * The case-blind walk is spelled out by hand rather than done by lowercasing
+ * the string first: lowercasing can change a string's length — a few characters
+ * lowercase into two — and every index here would then point one place off.
+ */
+function findMarker(text: string, marker: string, from: number, anyCase: boolean): number {
+    if (!anyCase) return text.indexOf(marker, from);
+    for (let at = from; at + marker.length <= text.length; at += 1) {
+        let same = true;
+        for (let step = 0; step < marker.length; step += 1) {
+            if (lowerAscii(text.charCodeAt(at + step)) !== lowerAscii(marker.charCodeAt(step))) {
+                same = false;
+                break;
+            }
+        }
+        if (same) return at;
+    }
+    return -1;
+}
+
+function lowerAscii(code: number): number {
+    return code >= 0x41 && code <= 0x5a ? code + 0x20 : code;
+}
+
+/**
+ * Replaces every credential of one kind with `[redacted]`, in a single pass.
+ *
+ * Find a marker, read what follows it, then either cut out a credential or skip
+ * to where the next one could begin. Every character is looked at a fixed number
+ * of times, so the cost is the length of the text and nothing else — which is
+ * the property this shape exists to have, and the one the timing test in
+ * `auth.test.ts` holds it to.
+ */
+function redactAll(
+    text: string,
+    marker: string,
+    read: (text: string, start: number) => Candidate,
+    anyCase = false,
+): string {
+    let out = "";
+    let kept = 0;
+    let from = 0;
+    for (;;) {
+        const start = findMarker(text, marker, from, anyCase);
+        if (start < 0) break;
+        const { end, resume } = read(text, start);
+        if (end === NO_CREDENTIAL) {
+            from = resume;
+            continue;
+        }
+        out += text.slice(kept, start) + REDACTED;
+        kept = end;
+        from = end;
+    }
+    return out.length === 0 ? text : out + text.slice(kept);
+}
 
 /** Anything that has no business being in a line of text we show or send. */
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
@@ -217,7 +395,7 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
  * Removes credential material from text we're about to show someone.
  *
  * `known` holds the exact strings this run is carrying — the verifier, the
- * code, the JWT, the token. The two patterns are the backstop for anything we
+ * code, the JWT, the token. The two scans are the backstop for anything we
  * didn't know about, such as a token echoed back inside a provider's error
  * body, or a hostile registry stuffing one into a field we print.
  */
@@ -225,10 +403,10 @@ export function scrubSecrets(text: string, known: readonly (string | undefined)[
     let out = text;
     for (const secret of known) {
         if (secret !== undefined && secret.length >= 8) {
-            out = out.split(secret).join("[redacted]");
+            out = out.split(secret).join(REDACTED);
         }
     }
-    return out.replace(PAT_ANYWHERE, "[redacted]").replace(JWT_ANYWHERE, "[redacted]");
+    return redactAll(redactAll(out, PAT_MARKER, readPat), JWT_MARKER, readJwt);
 }
 
 /**
@@ -260,7 +438,51 @@ export function isUsableBearerToken(value: string): boolean {
     return value.length > 0 && value.length <= 8192 && /^[\x21-\x7e]+$/.test(value);
 }
 
-/** Reads a response body for an error message: scrubbed, and kept short. */
+/**
+ * How much of a response body we are willing to look at: 64 KiB.
+ *
+ * The bodies this reads are error messages — a sentence, sometimes a small JSON
+ * object — so the cap is thousands of times more than any honest one needs, and
+ * it is here for the dishonest ones. The body comes from a server we do not
+ * control and arrives with no size limit of its own, and only 200 characters of
+ * it ever reach the message, so reading a megabyte in full would be work done
+ * purely at someone else's request. Scrubbing is linear now, but linear on a
+ * body the sender chooses the length of is still a lever they hold, and this
+ * takes it away.
+ */
+export const MAX_BODY_SCAN = 64 * 1024;
+
+/** How much of the scrubbed body actually reaches the error message. */
+const BODY_SHOWN = 200;
+
+/** Says out loud that there was more body than we looked at. */
+const BODY_TRUNCATED = "(rest of body omitted)";
+
+/**
+ * Cuts an untrusted body down to what we will scan, without splitting a secret.
+ *
+ * Cutting at a fixed length can land in the middle of a credential, and the half
+ * that stays can be too short for the scrubber to recognise — `fct_pub_ABCD.PQ`
+ * is two characters of somebody's secret and nothing the grammar matches. So
+ * when the cut lands inside a run of credential characters, the whole run goes
+ * and `[redacted]` stands in its place. The cost is the last word of a body big
+ * enough to be cut, which is a body nobody was reading to the end of anyway.
+ */
+export function capUntrustedBody(raw: string): string {
+    if (raw.length <= MAX_BODY_SCAN) return raw;
+    const window = raw.slice(0, MAX_BODY_SCAN);
+    if (!isBodyTokenChar(raw.charCodeAt(MAX_BODY_SCAN))) return window;
+    let at = window.length;
+    while (at > 0 && isBodyTokenChar(window.charCodeAt(at - 1))) at -= 1;
+    return at === window.length ? window : `${window.slice(0, at)}${REDACTED}`;
+}
+
+/** Everything a credential can be spelled with, dots included. */
+function isBodyTokenChar(code: number): boolean {
+    return isJwtChar(code) || code === DOT;
+}
+
+/** Reads a response body for an error message: capped, scrubbed, and kept short. */
 async function describeBody(response: Response, known: readonly (string | undefined)[]): Promise<string> {
     let raw: string;
     try {
@@ -268,9 +490,11 @@ async function describeBody(response: Response, known: readonly (string | undefi
     } catch {
         return "(no readable body)";
     }
-    const clean = scrubSecrets(raw, known).replace(/\s+/g, " ").trim();
-    if (clean.length === 0) return "(empty body)";
-    return clean.length > 200 ? `${clean.slice(0, 200)}…` : clean;
+    const cut = raw.length > MAX_BODY_SCAN;
+    const clean = scrubSecrets(capUntrustedBody(raw), known).replace(/\s+/g, " ").trim();
+    if (clean.length === 0) return cut ? `(nothing to read at the front of the body) ${BODY_TRUNCATED}` : "(empty body)";
+    const shown = clean.length > BODY_SHOWN ? `${clean.slice(0, BODY_SHOWN)}…` : clean;
+    return cut ? `${shown} ${BODY_TRUNCATED}` : shown;
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +860,7 @@ async function mintPat(config: AuthConfig, jwt: string, ports: AuthPorts): Promi
 
     const payload = (await response.json()) as { plaintext_token?: unknown };
     const token = payload.plaintext_token;
-    if (typeof token !== "string" || !PAT_SHAPE.test(token)) {
+    if (typeof token !== "string" || !isTokenShaped(token)) {
         throw new AuthFlowError("the registry returned a token in a shape this server doesn't recognise");
     }
     return token;
@@ -987,10 +1211,12 @@ export const WHOAMI_OPERATION = "Registry identity";
 const UNNAMED_REGISTRY = "facet registry";
 
 /**
- * The same JWT grammar, this time blind to case. See {@link registryLabel} for
- * why one field needs its own copy of a pattern the backstop already has.
+ * The same JWT scan, this time blind to case. See {@link registryLabel} for why
+ * one field needs a pass the backstop does not give everything else.
  */
-const JWT_ANY_CASE = new RegExp(JWT_GRAMMAR, "gi");
+function redactJwtsAnyCase(text: string): string {
+    return redactAll(text, JWT_MARKER, readJwt, true);
+}
 
 /**
  * The registry's host, for the times there is no account to name.
@@ -1013,7 +1239,7 @@ export function registryLabel(registryUrl: string): string {
     try {
         const { host } = new URL(registryUrl);
         if (host.length > 0) {
-            return host.replace(JWT_ANY_CASE, "[redacted]");
+            return redactJwtsAnyCase(host);
         }
     } catch {
         // Not a URL we can parse. Whatever the environment set is still the

@@ -23,13 +23,16 @@ import {
     PANEL_RESOURCE_URI,
     type AuthPorts,
     browserCommand,
+    capUntrustedBody,
     constantTimeEquals,
     createPkce,
     fetchIdentity,
     isUsableBearerToken,
+    MAX_BODY_SCAN,
     readAuthConfig,
     readCredentialsFile,
     registerAuth,
+    registryLabel,
     renderCredentialsIni,
     runBrowserLogin,
     sanitizeUntrusted,
@@ -593,6 +596,25 @@ describe("the browser sign-in", () => {
     });
 });
 
+/**
+ * Text of a given size, shaped to cost the scrubber as much as it possibly can.
+ *
+ * Every shape is a pile of credential markers that lead nowhere, which is what
+ * makes a backtracking pattern re-read the same characters over and over, and
+ * every one hides a real token at the end so that a scan which got fast by
+ * getting careless is caught in the same test.
+ */
+function hostileText(size: number): Record<string, string> {
+    const real = ` ${FAKE_PAT} ${FAKE_JWT}`;
+    return {
+        "overlapping headers": `${"eyJ".repeat(Math.floor(size / 3))}${real}`,
+        "overlapping headers with dots": `${`${"eyJ".repeat(21)}.`.repeat(Math.floor(size / 64))}${real}`,
+        "one unbroken run": `eyJ${"A".repeat(size)}${real}`,
+        "token markers back to back": `${"fct_pub_".repeat(Math.floor(size / 8))}${real}`,
+        "token markers with long prefixes": `${`fct_pub_${"A".repeat(60)}`.repeat(Math.floor(size / 68))}${real}`,
+    };
+}
+
 describe("secrets never reach the transcript", () => {
     test("scrubSecrets removes tokens it knows and tokens it doesn't", () => {
         expect(scrubSecrets(`saved ${FAKE_PAT} ok`)).toBe("saved [redacted] ok");
@@ -665,6 +687,131 @@ describe("secrets never reach the transcript", () => {
             expect(existsSync(config.credentialsPath)).toBe(false);
             expect(scrubSecrets(rejected)).toBe(rejected);
         }
+    });
+
+    test("a registry answering with a megabyte of noise is read only at the front", async () => {
+        // The whole route the finding named, end to end: a hostile registry
+        // returns an error body of its own choosing, which reaches the scrubber
+        // through describeBody. It used to arrive uncapped and get scanned in
+        // full by a quadratic pattern, so this reply would have held the server
+        // for minutes. Now the body is cut to the cap first, and what is left is
+        // scanned once.
+        const browser = browserThatRedirects();
+        const handlers = happyHandlers();
+        const noise = `refused: ${FAKE_PAT} ${"eyJ".repeat(400_000)}`;
+        handlers["/v0/auth/tokens"] = () => new Response(noise, { status: 503 });
+        const config = readAuthConfig(oauthEnv(), join(sandbox, "home"));
+
+        const started = performance.now();
+        const error = await runBrowserLogin(
+            config,
+            ports({ fetch: mockFetch(handlers).fn, openBrowser: browser.openBrowser }),
+        ).then(
+            () => null,
+            (e: unknown) => e as AuthFlowError,
+        );
+        const elapsed = performance.now() - started;
+
+        expect(error?.message).toContain("refused to mint a token (HTTP 503)");
+        expect(error?.message).toContain("refused: [redacted]");
+        expect(error?.message).toContain("(rest of body omitted)");
+        expect(error?.message).not.toContain("fct_pub_");
+        expect(error?.message.length).toBeLessThan(400);
+        expect(elapsed).toBeLessThan(3_000);
+        expect(existsSync(config.credentialsPath)).toBe(false);
+    }, 30_000);
+
+    test("the scan finds a credential that starts inside a false start", () => {
+        // Where a hand-written scan can go wrong that a regex cannot: after a
+        // candidate turns out not to be a credential, the scan skips ahead, and
+        // skipping one character too far loses the real token that began inside
+        // the false start. Both of these hide a genuine credential a few
+        // characters into a marker that leads nowhere.
+        expect(scrubSecrets("fct_pub_XYfct_pub_ABCD.EFGH")).toBe("fct_pub_XY[redacted]");
+        expect(scrubSecrets("eyJeyJ.eyJhbGciOiJIUzI1NiJ9.xyz")).toBe("eyJeyJ.[redacted]");
+        expect(scrubSecrets(`eyJ.eyJ.${FAKE_JWT}`)).toBe("eyJ.eyJ.[redacted]");
+        expect(scrubSecrets(`fct_pub_.${FAKE_PAT}`)).toBe("fct_pub_.[redacted]");
+    });
+
+    test("redaction costs linear time, even on text built to make it quadratic", () => {
+        // The regex this scan replaced was quadratic on a run of overlapping
+        // `eyJ` starts — 240 KB cost 9.1 seconds and every doubling cost four
+        // times as much — and a registry error body is a string a stranger
+        // chooses the contents of. The scan looks at each character a fixed
+        // number of times, so the same doublings cost twice as much, not four
+        // times, and a megabyte lands in single-digit milliseconds.
+        //
+        // The assertion is a wall clock rather than a growth ratio because
+        // ratios between millisecond readings are mostly noise, while what
+        // actually matters is that nothing anyone can send blocks the server for
+        // a length of time a person would notice. The budget is roughly a
+        // hundred times the observed cost, so it is a shape check and not a
+        // benchmark; against the regex this failed at the very first step, which
+        // took 2.6 seconds.
+        const budgetMs = 500;
+        for (const size of [128 * 1024, 256 * 1024, 512 * 1024, 1024 * 1024]) {
+            for (const [shape, hostile] of Object.entries(hostileText(size))) {
+                const started = performance.now();
+                const out = scrubSecrets(hostile);
+                const elapsed = performance.now() - started;
+                // Reported this way so a failure names the shape and the size
+                // rather than just showing two numbers.
+                expect({ shape, size, withinBudget: elapsed < budgetMs }).toEqual({ shape, size, withinBudget: true });
+                // Speed is worth nothing if the scan stopped redacting: each
+                // shape carries a real token somewhere in all that noise.
+                expect(out).not.toContain(FAKE_PAT);
+                expect(out).not.toContain(FAKE_JWT);
+                expect(out).toContain("[redacted]");
+            }
+        }
+    }, 30_000);
+
+    test("the same hostile text costs the same little through sanitizeUntrusted", () => {
+        // sanitizeUntrusted scrubs before it truncates, on purpose, so the whole
+        // megabyte reaches the scan before anything is thrown away. That is only
+        // affordable because the scan is linear.
+        const hostile = `${"eyJ".repeat(300_000)}${FAKE_PAT}`;
+        const started = performance.now();
+        const out = sanitizeUntrusted(hostile, 200);
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(out).not.toContain("fct_pub_");
+        expect(out.length).toBe(201);
+    }, 30_000);
+
+    test("the case-blind host scan is linear too, and still catches a token", () => {
+        // registryLabel gets its own case-blind pass because URL parsing
+        // lowercases a host, and it runs on whatever the environment set. A host
+        // of overlapping headers is the same trap in the same shape, one field
+        // further along — and it is still only a header, so it survives.
+        const started = performance.now();
+        expect(registryLabel(`https://${"EYJ".repeat(100_000)}`)).toContain("eyjeyj");
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(registryLabel("https://EYJHBGCIOIJSUZI1NIJ9.EYJZDWIIOIJHIN0")).toBe("[redacted]");
+    }, 30_000);
+
+    test("a body is cut down before it is scanned, and the cut cannot split a secret", () => {
+        // Nothing past the cap is looked at, which is what stops a stranger
+        // deciding how much work an error message costs us.
+        expect(capUntrustedBody("short body")).toBe("short body");
+        expect(capUntrustedBody("x".repeat(MAX_BODY_SCAN)).length).toBe(MAX_BODY_SCAN);
+        expect(capUntrustedBody(`${"registry says no. ".repeat(20)}x`.padEnd(MAX_BODY_SCAN + 500, " ")).length).toBe(
+            MAX_BODY_SCAN,
+        );
+
+        // The dangerous case: the cap lands two characters into a token's
+        // secret half. What is kept is below the grammar's minimum, so the
+        // scrubber would not see a credential in it and two characters of
+        // somebody's secret would be printed. The cut takes the whole fragment.
+        const prose = "registry error ".repeat(Math.ceil(MAX_BODY_SCAN / 15));
+        const straddling = `${prose.slice(0, MAX_BODY_SCAN - 23)}${FAKE_PAT} and more`;
+        expect(straddling.slice(MAX_BODY_SCAN - 23, MAX_BODY_SCAN)).toBe("fct_pub_ABCDEFGHJKMN.PQ");
+
+        const capped = scrubSecrets(capUntrustedBody(straddling));
+        expect(capped).not.toContain("fct_pub_");
+        expect(capped).not.toContain("ABCDEFGHJKMN");
+        expect(capped.endsWith("registry error [redacted]")).toBe(true);
+        // A cut landing on a space leaves the words before it alone.
+        expect(capUntrustedBody(`${prose.slice(0, MAX_BODY_SCAN)} tail`).endsWith("[redacted]")).toBe(false);
     });
 
     test("sanitizeUntrusted flattens, scrubs, and truncates whatever it is handed", () => {
