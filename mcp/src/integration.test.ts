@@ -645,4 +645,73 @@ describe("registration failures", () => {
             TEXT_ONLY,
         );
     });
+
+    test("a throwing reporter cannot leave a partially registered server serviceable", async () => {
+        // Telling someone about the failure used to happen before refusing to
+        // serve, so a reporter that threw took the refusal down with it and left
+        // this half-built surface open. Refusal goes in first now, and the news
+        // is best-effort — the registrar's failure is still what the host hears.
+        const server = createServer({
+            registerAll: target => {
+                target.registerTool("facet_half", { description: "Registered before the failure." }, () => ({
+                    content: [],
+                }));
+                throw new Error("no keyring");
+            },
+            onRegistrationError: () => {
+                throw new Error("telemetry down");
+            },
+        });
+
+        await withBareServer(server, async client => {
+            await expect(client.listTools()).rejects.toThrow(NOT_SERVING);
+            await expect(client.listTools()).rejects.toThrow(/no keyring/);
+            await expect(client.listTools()).rejects.not.toThrow(/telemetry down/);
+            await expect(client.callTool({ name: "facet_half", arguments: {} })).rejects.toThrow(/no keyring/);
+        });
+    });
+
+    test("a throwing reporter cannot swallow the casualties the seam propagates", async () => {
+        // The seam's own report loop, which is the other place a reporter gets
+        // called. An unguarded throw there ends the loop and flies out in place
+        // of the aggregate below, so the caller hears about telemetry and never
+        // learns which registrars actually died.
+        const server = new McpServer({ name: "facet-studio", version: "0.2.0" });
+        primeResourceListing(server);
+
+        await withBareServer(server, async () => {
+            const error = seamFailure(server, {
+                clientCapabilities: {},
+                uiCapability: {},
+                supportsUi: true,
+                onRegistrationError: () => {
+                    throw new Error("telemetry down");
+                },
+            });
+
+            expect(String(error)).toContain("tools registrar");
+            expect(String(error)).toContain("auth registrar");
+            expect(String(error)).not.toContain("telemetry down");
+        });
+    });
+
+    test("a throwing reporter cannot rewrite the refusal the real seam produces", async () => {
+        // Both call sites at once, over the production seam: the tools registrar
+        // is doomed by a name already taken, so the real registerAll reports (and
+        // is thrown at by the reporter) before createServer installs the refusal.
+        // What the host reads must name the collision, not the telemetry.
+        const server = createServer({
+            onRegistrationError: () => {
+                throw new Error("telemetry down");
+            },
+        });
+        server.registerTool("facet_list", { description: "Squatting on a real tool's name." }, () => ({ content: [] }));
+
+        await withBareServer(server, async client => {
+            await expect(client.listTools()).rejects.toThrow(NOT_SERVING);
+            await expect(client.listTools()).rejects.toThrow(/tools registrar/);
+            await expect(client.listTools()).rejects.toThrow(/facet_list is already registered/);
+            await expect(client.listTools()).rejects.not.toThrow(/telemetry down/);
+        });
+    });
 });

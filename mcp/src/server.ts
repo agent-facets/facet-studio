@@ -77,6 +77,8 @@ export interface StudioServerDeps {
      * Told about a registrar that threw, so a host or a test can see it.
      * Defaults to a line on stderr. This is only where the news goes — it has
      * no say in what happens next, and the server stops serving either way.
+     * If it throws, the throw is caught and logged: it can neither hold up the
+     * refusal nor stand in for the registration error the caller is given.
      */
     onRegistrationError?: (failure: RegistrationFailure) => void;
 }
@@ -143,6 +145,28 @@ function describe(failure: RegistrationFailure): string {
 function reportRegistrationFailure(failure: RegistrationFailure): void {
     // stdout is the protocol channel, so diagnostics go to stderr.
     console.error(`facet-studio: ${describe(failure)}`, failure.error);
+}
+
+/**
+ * Tells whoever is listening about a failure, without letting them change the
+ * outcome.
+ *
+ * Reporting is a courtesy; refusing to serve is the policy. A reporter can throw
+ * for reasons that have nothing to do with the server — telemetry is down, a log
+ * sink is full — and if that throw escaped it would do real damage twice over:
+ * it could stop the refusal from being installed, and it would take the place of
+ * the registration error the caller is waiting to hear about. So it dies here,
+ * with a line on stderr, and the original failure carries on to the caller.
+ *
+ * Every call to a reporter goes through this. There is no safe unguarded one.
+ */
+function notify(report: (failure: RegistrationFailure) => void, failure: RegistrationFailure): void {
+    try {
+        report(failure);
+    } catch (reporterError) {
+        // stdout is the protocol channel, so diagnostics go to stderr.
+        console.error(`facet-studio: the registration-failure reporter threw; ${describe(failure)}`, reporterError);
+    }
 }
 
 /**
@@ -228,7 +252,10 @@ export function registerAll(server: McpServer, deps: RegistrationDeps): void {
     const report = deps.onRegistrationError ?? reportRegistrationFailure;
     const failed = failures.filter((failure): failure is RegistrationFailure => failure !== undefined);
     for (const failure of failed) {
-        report(failure);
+        // Guarded, because a reporter that threw here would end the loop and fly
+        // out of the seam in place of the throw below — the caller would hear
+        // about the reporter and never about the registrars that actually failed.
+        notify(report, failure);
     }
 
     if (failed.length > 0) {
@@ -280,8 +307,13 @@ export function createServer(deps: StudioServerDeps = {}): McpServer {
             });
         });
         if (failure !== undefined) {
-            (deps.onRegistrationError ?? reportRegistrationFailure)(failure);
+            // Refusal goes in first. Telling someone is the next thing that
+            // happens, not the thing the refusal waits on: a reporter that
+            // throws on the way out used to leave the half-built surface open
+            // for business, which is the exact outcome this whole policy exists
+            // to prevent. Install the refusal, then send the news.
             refuseToServe(server, failure);
+            notify(deps.onRegistrationError ?? reportRegistrationFailure, failure);
         }
     };
 
