@@ -33,7 +33,10 @@ import {
     renderCredentialsIni,
     runBrowserLogin,
     sanitizeUntrusted,
+    SCRUB_MAX_DEPTH,
+    SCRUB_OMITTED,
     scrubSecrets,
+    scrubStructured,
     startLoopback,
     writeCredentials,
 } from "./auth.js";
@@ -716,6 +719,137 @@ describe("secrets never reach the transcript", () => {
     });
 });
 
+describe("the structured scrub reaches the whole payload", () => {
+    // These call scrubStructured directly, which is the point: it is the last
+    // line of defence, and the upstream shape gates are deliberately not in the
+    // picture. Every value here is one that already got past everything else.
+
+    test("a secret three objects down is redacted, not passed through", () => {
+        const out = scrubStructured({
+            signedIn: true,
+            profile: { account: { credential: { token: FAKE_PAT } } },
+        });
+        const everything = JSON.stringify(out);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain(FAKE_PAT);
+        // Redacted in place: the shape the host expects is exactly what it gets.
+        expect(out).toEqual({
+            signedIn: true,
+            profile: { account: { credential: { token: "[redacted]" } } },
+        });
+    });
+
+    test("a secret inside an array element is redacted", () => {
+        const out = scrubStructured({
+            tokens: [{ name: "a", value: FAKE_PAT }, { name: "b", value: FAKE_JWT }],
+            notes: ["clean", `dirty ${FAKE_JWT}`],
+        });
+        const everything = JSON.stringify(out);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain("eyJ");
+        expect(everything).not.toContain(FAKE_PAT);
+        // Arrays stay arrays, so a host expecting a list still gets one.
+        expect(out).toEqual({
+            tokens: [{ name: "a", value: "[redacted]" }, { name: "b", value: "[redacted]" }],
+            notes: ["clean", "dirty [redacted]"],
+        });
+        expect(Array.isArray(out.tokens)).toBe(true);
+        expect(Array.isArray(out.notes)).toBe(true);
+    });
+
+    test("a secret used as a key is redacted too", () => {
+        // A key is a string a host will render just as readily as a value.
+        const out = scrubStructured({ [FAKE_PAT]: "value", nested: { [FAKE_JWT]: "value" } });
+        const everything = JSON.stringify(out);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain("eyJ");
+        expect(Object.keys(out)).toContain("[redacted]");
+    });
+
+    test("arrays of arrays of objects are still reached", () => {
+        const out = scrubStructured({ grid: [[{ v: FAKE_PAT }], [[{ v: FAKE_JWT }]]] });
+        const everything = JSON.stringify(out);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain("eyJ");
+    });
+
+    test("non-strings keep their types", () => {
+        const out = scrubStructured({ n: 42, b: false, z: null, nested: { n: 7, list: [1, 2, 3] } });
+        expect(out).toEqual({ n: 42, b: false, z: null, nested: { n: 7, list: [1, 2, 3] } });
+    });
+
+    test("anything below the depth limit is dropped rather than emitted unchecked", () => {
+        // Burying a secret deeper than the walk goes must not be a way of
+        // getting it through. Past the limit the walk stopped being able to
+        // check, so the value is replaced instead of copied.
+        let buried: unknown = { token: FAKE_PAT };
+        for (let i = 0; i < SCRUB_MAX_DEPTH + 5; i += 1) buried = { down: buried };
+        const out = scrubStructured({ buried });
+        const everything = JSON.stringify(out);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain(FAKE_PAT);
+        expect(everything).toContain(SCRUB_OMITTED);
+    });
+
+    test("a payload nested past the limit does not blow the stack", () => {
+        let deep: unknown = FAKE_PAT;
+        for (let i = 0; i < 100_000; i += 1) deep = { down: deep };
+        const started = performance.now();
+        const everything = JSON.stringify(scrubStructured({ deep }));
+        expect(performance.now() - started).toBeLessThan(1_000);
+        expect(everything).not.toContain("fct_pub_");
+    }, 30_000);
+
+    test("an object that contains itself terminates", () => {
+        const loop: Record<string, unknown> = { token: FAKE_PAT };
+        loop.self = loop;
+        const out = scrubStructured({ loop });
+        const everything = JSON.stringify(out);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).toContain(SCRUB_OMITTED);
+    });
+
+    test("a hostile pile of small nodes is bounded, and leaks nothing", () => {
+        // Far more values than the walk will visit. What it could not check is
+        // replaced, so the secret cannot ride out on the far side of the budget.
+        const many = Array.from({ length: 50_000 }, (_, i) => ({ i, v: i === 49_999 ? FAKE_PAT : "x" }));
+        const started = performance.now();
+        const everything = JSON.stringify(scrubStructured({ many }));
+        expect(performance.now() - started).toBeLessThan(2_000);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain(FAKE_PAT);
+        expect(everything).toContain(SCRUB_OMITTED);
+    }, 30_000);
+
+    test("a 600 KB profile is scrubbed in full, quickly", () => {
+        // Big but not deep — the shape a real registry could plausibly send.
+        // It stays inside both limits, so every secret in it is really redacted
+        // rather than dropped, and it still finishes in well under a second.
+        const filler = "x".repeat(200_000);
+        const payload = {
+            signedIn: true,
+            profile: {
+                bio: `${filler.slice(0, 100_000)} ${FAKE_PAT} ${filler.slice(0, 100_000)}`,
+                history: [{ note: `${filler} ${FAKE_JWT}` }],
+                deeper: { note: `${filler} ${FAKE_PAT}` },
+            },
+        };
+        expect(JSON.stringify(payload).length).toBeGreaterThan(600_000);
+
+        const started = performance.now();
+        const out = scrubStructured(payload);
+        const elapsed = performance.now() - started;
+        const everything = JSON.stringify(out);
+
+        expect(elapsed).toBeLessThan(1_000);
+        expect(everything).not.toContain("fct_pub_");
+        expect(everything).not.toContain("eyJ");
+        expect(everything).not.toContain(SCRUB_OMITTED);
+        expect(everything).toContain("[redacted]");
+        expect(out.signedIn).toBe(true);
+    }, 30_000);
+});
+
 describe("the tools", () => {
     interface Harness {
         client: Client;
@@ -909,6 +1043,60 @@ describe("the tools", () => {
             expect(everything).not.toContain("eyJ");
             expect(everything).not.toContain(FAKE_JWT);
             expect(everything).toContain("owner [redacted]");
+        } finally {
+            await harness.close();
+        }
+    });
+
+    // The chokepoint in `text()` is the last line of defence, and these two pin
+    // it on its own. Every other value in a reply has already been through a
+    // gate upstream — sanitizeUntrusted, the token shape check — so removing
+    // the chokepoint changes nothing about them and no test notices. The two
+    // values that reach it ungated are the ones taken straight from the
+    // environment: the registry URL, which lands in structuredContent, and the
+    // credentials path, which lands in the prose. Point either at something
+    // token-shaped and only `text()` stands between it and the host.
+
+    test("facet_whoami: nothing credential-shaped survives the last line of defence", async () => {
+        const dirtyRegistry = `https://api.example.test/${FAKE_JWT}`;
+        const dirtyDir = join(sandbox, `home-${FAKE_PAT}`, ".facet");
+        const harness = await connect({ env: { FACET_DIR: dirtyDir, FACET_REGISTRY_URL: dirtyRegistry } });
+        try {
+            const result = (await harness.client.callTool({ name: "facet_whoami" })) as CallToolResult;
+            const body = textOf(result);
+            const structured = JSON.stringify(result.structuredContent ?? {});
+
+            // The prose half.
+            expect(body).not.toContain("fct_pub_");
+            expect(body).not.toContain(FAKE_PAT);
+            // The structured half.
+            expect(structured).not.toContain("eyJ");
+            expect(structured).not.toContain(FAKE_JWT);
+
+            // Still a useful answer, not a blank one.
+            expect(body).toContain("not signed in");
+            expect(result.structuredContent).toMatchObject({ signedIn: false, mode: "fallback" });
+        } finally {
+            await harness.close();
+        }
+    });
+
+    test("facet_login: nothing credential-shaped survives the last line of defence", async () => {
+        const dirtyRegistry = `https://api.example.test/${FAKE_JWT}`;
+        const dirtyDir = join(sandbox, `login-${FAKE_PAT}`, ".facet");
+        const harness = await connect({ env: { FACET_DIR: dirtyDir, FACET_REGISTRY_URL: dirtyRegistry } });
+        try {
+            const result = (await harness.client.callTool({ name: "facet_login" })) as CallToolResult;
+            const body = textOf(result);
+            const structured = JSON.stringify(result.structuredContent ?? {});
+
+            expect(body).not.toContain("fct_pub_");
+            expect(body).not.toContain(FAKE_PAT);
+            expect(structured).not.toContain("eyJ");
+            expect(structured).not.toContain(FAKE_JWT);
+
+            expect(body).toContain("/settings/tokens");
+            expect(result.structuredContent).toMatchObject({ signedIn: false, mode: "fallback" });
         } finally {
             await harness.close();
         }

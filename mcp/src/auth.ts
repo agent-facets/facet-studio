@@ -957,12 +957,61 @@ function text(body: string, structured: Record<string, unknown>, isError = false
     };
 }
 
-function scrubStructured(structured: Record<string, unknown>): Record<string, unknown> {
+/** How deep the structured walk will go, and how many values it will look at. */
+export const SCRUB_MAX_DEPTH = 8;
+export const SCRUB_MAX_NODES = 5_000;
+
+/** What a value past those limits turns into, rather than being passed through. */
+export const SCRUB_OMITTED = "[omitted]";
+
+/**
+ * Scrubs every string anywhere in a structured payload, not just the top row.
+ *
+ * A host may render `structuredContent` as readily as the prose, so a secret is
+ * just as exposed sitting three objects down or inside an array as it is at the
+ * top level. This walks the whole thing — objects, arrays, and the keys as well
+ * as the values, since a key is a string somebody will see too.
+ *
+ * The walk is bounded twice, by depth and by how many values it visits, so a
+ * payload built to be expensive to inspect can't turn one tool reply into a
+ * long computation. Anything past a limit is replaced rather than copied
+ * through: hitting the limit means we stopped being able to check, and passing
+ * an unchecked value along is the one outcome worth avoiding. The same goes for
+ * a cycle — an object that contains itself is replaced where it repeats.
+ *
+ * Real payloads here are a handful of flat fields, so the limits never come
+ * near them. They exist for whatever arrives on a bad day.
+ */
+export function scrubStructured(structured: Record<string, unknown>): Record<string, unknown> {
+    const budget = { nodes: SCRUB_MAX_NODES };
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(structured)) {
-        out[key] = typeof value === "string" ? scrubSecrets(value) : value;
+        out[scrubSecrets(key)] = scrubValue(value, SCRUB_MAX_DEPTH, budget, new Set());
     }
     return out;
+}
+
+function scrubValue(value: unknown, depth: number, budget: { nodes: number }, onPath: Set<object>): unknown {
+    if (depth < 0 || budget.nodes <= 0) return SCRUB_OMITTED;
+    budget.nodes -= 1;
+
+    if (typeof value === "string") return scrubSecrets(value);
+    if (value === null || typeof value !== "object") return value;
+    if (onPath.has(value)) return SCRUB_OMITTED;
+
+    onPath.add(value);
+    try {
+        if (Array.isArray(value)) {
+            return value.map(item => scrubValue(item, depth - 1, budget, onPath));
+        }
+        const out: Record<string, unknown> = {};
+        for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+            out[scrubSecrets(key)] = scrubValue(item, depth - 1, budget, onPath);
+        }
+        return out;
+    } finally {
+        onPath.delete(value);
+    }
 }
 
 /** The parts of a tool registration that don't depend on the host. */
