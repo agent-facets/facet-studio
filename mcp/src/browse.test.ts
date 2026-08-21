@@ -195,6 +195,67 @@ describe("the request", () => {
         const clamped = await browse({ limit: 50 }, { fetchFacets: async () => many });
         expect(clamped.results).toHaveLength(MAX_LIMIT);
     });
+
+    test("type filter keeps only facets with that asset type", async () => {
+        const data = await browse(
+            { type: "skill" },
+            {
+                fetchFacets: async () => ({
+                    facets: [
+                        { name: "has-skill", asset_counts: { skills: 1, agents: 0 } },
+                        { name: "only-agent", asset_counts: { skills: 0, agents: 1 } },
+                    ],
+                }),
+            },
+        );
+        expect(data.results.map(f => f.name)).toEqual(["has-skill"]);
+        expect(data.type).toBe("skill");
+    });
+
+    test("type filter composes with query", async () => {
+        const asked: string[] = [];
+        const data = await browse(
+            { query: "coding", type: "command" },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    return {
+                        facets: [
+                            { name: "has-cmd", asset_counts: { commands: 2 } },
+                            { name: "no-cmd", asset_counts: { skills: 1 } },
+                        ],
+                    };
+                },
+            },
+        );
+        expect(asked[0]).toContain("q=coding");
+        expect(data.results.map(f => f.name)).toEqual(["has-cmd"]);
+        expect(data.type).toBe("command");
+    });
+
+    test("type filter with fallback applies to fallback results", async () => {
+        const asked: string[] = [];
+        const fallbackFacets = [
+            { name: "agent-facet", asset_counts: { agents: 1 } },
+            { name: "skill-facet", asset_counts: { skills: 1 } },
+        ];
+        const data = await browse(
+            { query: "impossible phrase", type: "agent" },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    // First call: query with specific phrase returns nothing
+                    if (url.includes("q=")) return { facets: [] };
+                    // Second call: fallback returns everything
+                    return { facets: fallbackFacets };
+                },
+            },
+        );
+        expect(asked).toHaveLength(2);
+        expect(data.fallback).toBe(true);
+        expect(data.results.map(f => f.name)).toEqual(["agent-facet"]);
+        expect(data.type).toBe("agent");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -410,6 +471,28 @@ describe("browse end to end, tool result straight into the console", () => {
         const console_ = new ConsoleController(mount as unknown as PanelElement, stubPorts(), testDocument);
         console_.show(result, toPanelData(result, { operation: "Browse facets" }));
         expect(text(mount)).toContain("Nothing matched zzz.");
+
+        await client.close();
+    });
+
+    test("an invalid type is refused by the schema at the tool layer", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, { fetchFacets: async () => ({ facets: [] }) });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        const result = (await client.callTool({
+            name: "facet_browse",
+            arguments: { type: "banana" },
+        })) as { isError?: boolean; content: { text: string }[] };
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("skill");
+        expect(result.content[0].text).toContain("agent");
+        expect(result.content[0].text).toContain("command");
+        expect(result.content[0].text).toContain("server");
 
         await client.close();
     });

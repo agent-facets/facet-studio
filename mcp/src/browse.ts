@@ -73,6 +73,8 @@ export interface GalleryData {
     query: string;
     /** True when the query matched nothing and everything published is shown instead. */
     fallback?: boolean;
+    /** Asset type to filter by, if set. One of skill, agent, command, or server. */
+    type?: string;
     results: GalleryFacet[];
 }
 
@@ -146,12 +148,13 @@ export function toText(data: GalleryData): string {
         return counts === "" ? `- ${parts.join(" — ")}` : `- ${parts.join(" — ")} (${counts})`;
     });
     const count = `${data.results.length} facet${data.results.length === 1 ? "" : "s"}`;
+    const typeClause = data.type !== undefined ? ` carrying ${data.type} assets` : "";
     const heading =
         data.query === ""
-            ? `${count} on the registry:`
+            ? `${count}${typeClause} on the registry:`
             : data.fallback === true
-              ? `Nothing matched ${data.query}, so here is everything published — ${count}:`
-              : `${count} matching ${data.query}:`;
+              ? `Nothing matched ${data.query}, so here is everything published${typeClause} — ${count}:`
+              : `${count}${typeClause} matching ${data.query}:`;
     return [heading, ...lines].join("\n");
 }
 
@@ -433,12 +436,18 @@ const browseShape = {
     // No upper bound in the schema: a host model that asks for 50 should get
     // the capped page, not a validation error it can do nothing about.
     limit: z.number().int().min(1).optional().describe(`Most results to return (default ${DEFAULT_LIMIT}, capped at ${MAX_LIMIT}).`),
+    type: z
+        .enum(["skill", "agent", "command", "server"])
+        .optional()
+        .describe(
+            "Only facets carrying at least one asset of this type. Set it whenever the user names a kind — skills, agents, commands, MCP servers.",
+        ),
 };
 
 const browseSchema = z.object(browseShape);
 
 /** Fetches and normalizes a page of registry results. */
-export async function browse(args: { query?: string; limit?: number }, deps: BrowseDeps = {}): Promise<GalleryData> {
+export async function browse(args: { query?: string; limit?: number; type?: string }, deps: BrowseDeps = {}): Promise<GalleryData> {
     const env = deps.env ?? process.env;
     const base = stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
     const query = args.query?.trim() ?? "";
@@ -467,11 +476,18 @@ export async function browse(args: { query?: string; limit?: number }, deps: Bro
         fallback = true;
     }
 
+    // Map to GalleryFacet first, then apply type filter if set
+    let results = parsed.facets.map(toGalleryFacet);
+    if (args.type !== undefined) {
+        results = results.filter(facet => facet.counts.some(count => count.type === args.type));
+    }
+
     return {
         kind: "gallery",
         query,
         fallback,
-        results: parsed.facets.slice(0, limit).map(toGalleryFacet),
+        type: args.type,
+        results: results.slice(0, limit),
     };
 }
 
@@ -500,10 +516,11 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
             "who published it, and what is inside it. Use this whenever someone asks what facets " +
             "exist, what is available, or wants to find a facet to install. Call it AT MOST ONCE " +
             "per question — every call renders its own panel, and the user can refine the search " +
-            "inside it. The registry search is literal, so for a thematic question (git tools, " +
-            "workflow helpers) omit the query, browse everything — the catalog is small — and " +
-            "judge relevance from the one result. Never issue several browses with different " +
-            "phrasings of the same question.",
+            "inside it. The registry search is literal, so translate intent into criteria: put only a real " +
+            "keyword in `query` (\"git\", not \"git related facets\"), set `type` when the user " +
+            "names an asset kind (\"git skills\" → query git, type skill; \"MCP servers\" → type " +
+            "server), and omit `query` for anything thematic — the catalog is small — then judge " +
+            "relevance from the one result. Never issue several browses with different phrasings.",
         inputSchema: browseShape,
         annotations: {
             title: "Browse facets",
@@ -519,12 +536,13 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
         try {
             const data = await browse(args, deps);
             const count = data.results.length === 1 ? "1 facet" : `${data.results.length} facets`;
+            const typeInfo = data.type !== undefined ? ` (type: ${data.type})` : "";
             const brief =
                 data.query === ""
-                    ? `${count} from the registry, in the panel's Registry screen.`
+                    ? `${count}${typeInfo} from the registry, in the panel's Registry screen.`
                     : data.fallback === true
-                      ? `Nothing matched "${data.query}" exactly, so the panel's Registry screen is showing everything published — ${count}. Do not browse again.`
-                      : `${count} matching "${data.query}", in the panel's Registry screen.`;
+                      ? `Nothing matched "${data.query}" exactly, so the panel's Registry screen is showing everything published — ${count}${typeInfo}. Do not browse again.`
+                      : `${count}${typeInfo} matching "${data.query}", in the panel's Registry screen.`;
             return {
                 content: [{ type: "text", text: readout(deps.supportsUi, brief, () => toText(data)) }],
                 structuredContent: data as unknown as Record<string, unknown>,
