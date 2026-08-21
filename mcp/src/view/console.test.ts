@@ -729,25 +729,27 @@ describe("the registry screen", () => {
         expect(text(mount)).toContain("facet-00");
     });
 
-    test("chip pre-selection: browse result with type: 'skill' filters to skills", async () => {
+    test("chip pre-selection via show(): a delivered browse result seeds the filter from its type", () => {
         const mount = root();
-        const controller = consoleOn(
-            mount,
-            stubPorts({
-                browse: async query => ({
-                    query,
-                    type: "skill",
-                    results: [
-                        facetNamed("git-skills"),
-                        facetNamed("web-skills"),
-                        facetNamed("agent-only", [{ type: "agent", label: "1 Agent" }]),
-                    ],
-                }),
-            }),
+        const controller = consoleOn(mount, stubPorts());
+        // A bare gallery record, the shape readGallery() matches directly off
+        // `kind` — this is show()'s branch, not the console's own self-fetch.
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                type: "skill",
+                results: [
+                    facetNamed("git-skills"),
+                    facetNamed("web-skills"),
+                    facetNamed("agent-only", [{ type: "agent", label: "1 Agent" }]),
+                ],
+            },
+            "facet_browse",
         );
-        controller.start("registry");
-        await Bun.sleep(0);
 
+        expect(controller.snapshot().screen).toBe("registry");
         // Skills chip is pre-selected with filter-on class.
         const skillsChip = buttonsLabelled(mount, "Skills")[0];
         expect(skillsChip?.className).toContain("filter-on");
@@ -758,19 +760,14 @@ describe("the registry screen", () => {
         expect(text(mount)).not.toContain("agent-only");
     });
 
-    test("chip pre-selection: browse result without type defaults to 'all'", async () => {
+    test("chip pre-selection via show(): a delivered browse result without type defaults to 'all'", () => {
         const mount = root();
-        const controller = consoleOn(
-            mount,
-            stubPorts({
-                browse: async query => ({
-                    query,
-                    results: [facetNamed("some-facet")],
-                }),
-            }),
+        const controller = consoleOn(mount, stubPorts());
+        deliver(
+            controller,
+            { kind: "gallery", query: "", results: [facetNamed("some-facet")] },
+            "facet_browse",
         );
-        controller.start("registry");
-        await Bun.sleep(0);
 
         // Everything chip is pre-selected with filter-on class.
         const everythingChip = buttonsLabelled(mount, "Everything")[0];
@@ -780,20 +777,14 @@ describe("the registry screen", () => {
         expect(text(mount)).toContain("some-facet");
     });
 
-    test("chip pre-selection: user clicking another chip overrides the pre-selected filter", async () => {
+    test("chip pre-selection via show(): user clicking another chip overrides the pre-selected filter", () => {
         const mount = root();
-        const controller = consoleOn(
-            mount,
-            stubPorts({
-                browse: async query => ({
-                    query,
-                    type: "skill",
-                    results: [facetNamed("test-facet")],
-                }),
-            }),
+        const controller = consoleOn(mount, stubPorts());
+        deliver(
+            controller,
+            { kind: "gallery", query: "", type: "skill", results: [facetNamed("test-facet")] },
+            "facet_browse",
         );
-        controller.start("registry");
-        await Bun.sleep(0);
 
         // Skills chip is initially on.
         expect(buttonsLabelled(mount, "Skills")[0]?.className).toContain("filter-on");
@@ -804,6 +795,30 @@ describe("the registry screen", () => {
         // Agents chip is now on, Skills is off.
         expect(buttonsLabelled(mount, "Agents")[0]?.className).toContain("filter-on");
         expect(buttonsLabelled(mount, "Skills")[0]?.className).not.toContain("filter-on");
+    });
+
+    test("chip pre-selection via loadRegistry(): the console's own self-fetch seeds the filter too", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async query => ({
+                    query,
+                    type: "skill",
+                    results: [
+                        facetNamed("git-skills"),
+                        facetNamed("agent-only", [{ type: "agent", label: "1 Agent" }]),
+                    ],
+                }),
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        const skillsChip = buttonsLabelled(mount, "Skills")[0];
+        expect(skillsChip?.className).toContain("filter-on");
+        expect(text(mount)).toContain("git-skills");
+        expect(text(mount)).not.toContain("agent-only");
     });
 
     test("degraded path: summary result without _meta self-loads registry via browse", async () => {
