@@ -19,6 +19,7 @@ import {
     element,
     field,
     firstString,
+    payloadOf,
     requireDocument,
     stringOr,
     type PanelDocument,
@@ -136,13 +137,7 @@ function toArchive(value: unknown): BuiltArchive | undefined {
 
 /** Reads a manifest read, or returns undefined when this isn't one. */
 export function toAuthorData(value: unknown): AuthorData | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "author"
-        ? structured
-        : firstString(outer.kind) === "author"
-          ? outer
-          : undefined;
+    const source = payloadOf(value, "author");
     if (source === undefined) {
         return undefined;
     }

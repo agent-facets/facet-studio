@@ -17,6 +17,7 @@ import {
     button,
     element,
     firstString,
+    payloadOf,
     requireDocument,
     stringOr,
     type PanelDocument,
@@ -131,13 +132,7 @@ function toDrift(value: unknown): DriftEntry | undefined {
 
 /** Reads a project read, or returns undefined when this isn't one. */
 export function toInstalledData(value: unknown): InstalledData | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "installed"
-        ? structured
-        : firstString(outer.kind) === "installed"
-          ? outer
-          : undefined;
+    const source = payloadOf(value, "installed");
     if (source === undefined) {
         return undefined;
     }
