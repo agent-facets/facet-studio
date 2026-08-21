@@ -71,6 +71,7 @@ const EXPECTED_TOOLS = [
     "facet_readme",
     "facet_project",
     "facet_manifest",
+    "facet_capabilities",
     "facet_login",
     "facet_whoami",
 ] as const;
@@ -80,6 +81,9 @@ const BROWSE_TOOLS = ["facet_browse", "facet_contents", "facet_detail", "facet_r
 
 /** The two project reads, from ./project and ./authoring. */
 const PROJECT_TOOLS = ["facet_project", "facet_manifest"] as const;
+
+/** The self-report from ./capabilities: what the host negotiated. */
+const CAPABILITY_TOOLS = ["facet_capabilities"] as const;
 
 /** The two tools that come from ./auth rather than the lifecycle spec table. */
 const AUTH_TOOLS = ["facet_login", "facet_whoami"] as const;
@@ -135,10 +139,14 @@ describe("the published surface, over a real client", () => {
     test("the hand-written tool list still matches the real spec table", () => {
         // If a lifecycle tool is added or renamed in tools.ts, this is the test
         // that fails first, and the fix is to update EXPECTED_TOOLS deliberately.
-        expect([...TOOL_SPECS.map(spec => spec.name), ...BROWSE_TOOLS, ...PROJECT_TOOLS, ...AUTH_TOOLS]).toEqual([
-            ...EXPECTED_TOOLS,
-        ]);
-        expect(EXPECTED_TOOLS).toHaveLength(17);
+        expect([
+            ...TOOL_SPECS.map(spec => spec.name),
+            ...BROWSE_TOOLS,
+            ...PROJECT_TOOLS,
+            ...CAPABILITY_TOOLS,
+            ...AUTH_TOOLS,
+        ]).toEqual([...EXPECTED_TOOLS]);
+        expect(EXPECTED_TOOLS).toHaveLength(18);
     });
 
     for (const [label, capabilities] of [
@@ -397,18 +405,56 @@ function expectNotHollow(card: CardNode, result: CallToolResult): void {
 
 describe("a real tool result, through the real renderer", () => {
     test("facet_list fills the card in with this project's own identity", async () => {
-        await withHost(UI_CAPABLE, async client => {
-            const result = (await client.callTool({ name: "facet_list", arguments: {} })) as CallToolResult;
-            const card = renderCard(result);
+        // Naming the root is what separates "I looked and found nothing" from
+        // "nobody told me where to look". This test is about the card, so it
+        // says where the project is and lets the read succeed; the refusal has
+        // its own test below.
+        const previous = process.env.FACET_PROJECT_ROOT;
+        process.env.FACET_PROJECT_ROOT = process.cwd();
+        try {
+            await withHost(UI_CAPABLE, async client => {
+                const result = (await client.callTool({ name: "facet_list", arguments: {} })) as CallToolResult;
+                const card = renderCard(result);
 
-            // There is no facet.json beside these tests, so the CLI has no name
-            // to report and the run falls back to the project directory's own
-            // name. Still a true one — the card is never left saying nothing.
-            expect(textAt(card, "facet")).toBe(path.basename(realpathSync(process.cwd())));
-            expect(textAt(card, "operation")).toBe(await publishedTitle(client, "facet_list"));
-            expect(textAt(card, "status-text")).toBe("Succeeded");
-            expectNotHollow(card, result);
-        });
+                // There is no facet.json beside these tests, so the CLI has no name
+                // to report and the run falls back to the project directory's own
+                // name. Still a true one — the card is never left saying nothing.
+                expect(textAt(card, "facet")).toBe(path.basename(realpathSync(process.cwd())));
+                expect(textAt(card, "operation")).toBe(await publishedTitle(client, "facet_list"));
+                expect(textAt(card, "status-text")).toBe("Succeeded");
+                expectNotHollow(card, result);
+            });
+        } finally {
+            if (previous === undefined) delete process.env.FACET_PROJECT_ROOT;
+            else process.env.FACET_PROJECT_ROOT = previous;
+        }
+    });
+
+    test("an unconfirmed root reports itself instead of an empty facet list", async () => {
+        // The defect this replaces: a host that starts the server in a scratch
+        // directory got `declared: false, facets: []` back and read it as "this
+        // project has no facets". The answer now names the directory it read
+        // and says nobody supplied a workspace root.
+        const previous = process.env.FACET_PROJECT_ROOT;
+        const previousClaude = process.env.CLAUDE_PROJECT_DIR;
+        delete process.env.FACET_PROJECT_ROOT;
+        delete process.env.CLAUDE_PROJECT_DIR;
+        try {
+            await withHost(TEXT_ONLY, async client => {
+                const result = (await client.callTool({ name: "facet_list", arguments: {} })) as CallToolResult;
+                const text = String((result.content as { text?: string }[])[0]?.text ?? "");
+
+                // An error, not data. A caller that treats this as a result
+                // would be right back to reporting an absence it never checked.
+                expect(result.isError).toBe(true);
+                expect(text).toContain("No workspace root was supplied");
+                expect(text).toContain(realpathSync(process.cwd()));
+                expect(text).toContain("FACET_PROJECT_ROOT");
+            });
+        } finally {
+            if (previous !== undefined) process.env.FACET_PROJECT_ROOT = previous;
+            if (previousClaude !== undefined) process.env.CLAUDE_PROJECT_DIR = previousClaude;
+        }
     });
 
     test("a facet the CLI really built shows its own name and its own assets", async () => {
@@ -555,6 +601,7 @@ describe("registration failures", () => {
                 "browse",
                 "project",
                 "authoring",
+                "capabilities",
                 "auth",
             ]);
             // One error, both casualties named in it, so whoever sees only the

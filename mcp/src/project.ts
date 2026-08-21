@@ -17,6 +17,7 @@ import { z } from "zod";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { resolveDirectory } from "./tools.js";
+import { rootReader, unconfirmedRootMessage, describeRoot, type RootAware } from "./root.js";
 import { PANEL_RESOURCE_URI } from "./view/panel.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -118,6 +119,12 @@ export interface InstalledData {
     project: string;
     /** Its full path, for the line under the header. */
     directory: string;
+    /**
+     * Where that path came from — configured, the environment, the host's open
+     * folder, or an unconfirmed working directory. Shown under the header so a
+     * wrong root is visible rather than something to deduce from an empty list.
+     */
+    rootLabel: string;
     /** False when there is no `facets.json` — the project has no facets at all. */
     declared: boolean;
     /** False when nothing has been installed yet. */
@@ -250,7 +257,7 @@ async function readJson(file: string): Promise<{ found: boolean; value?: unknown
     }
 }
 
-export interface ProjectDeps {
+export interface ProjectDeps extends RootAware {
     /** The root every path is resolved under. Defaults to the process's cwd. */
     projectRoot?: string;
 }
@@ -263,7 +270,8 @@ export interface ProjectDeps {
  * empty list beside a banner saying so is more use than an error.
  */
 export async function readProject(directory: string | undefined, deps: ProjectDeps = {}): Promise<InstalledData> {
-    const root = path.resolve(deps.projectRoot ?? process.cwd());
+    const resolvedRoot = rootReader(deps)();
+    const root = resolvedRoot.path;
     const resolved = resolveDirectory(root, directory);
     if (!resolved.ok) {
         throw new Error(resolved.message);
@@ -333,6 +341,7 @@ export async function readProject(directory: string | undefined, deps: ProjectDe
         kind: "installed",
         project: path.basename(dir),
         directory: dir,
+        rootLabel: describeRoot(resolvedRoot),
         declared: manifestFile.found,
         locked: lockFile.found,
         facets,
@@ -343,7 +352,18 @@ export async function readProject(directory: string | undefined, deps: ProjectDe
 /** The plain-text half, for a host that renders no UI at all. */
 export function toText(data: InstalledData): string {
     if (!data.declared) {
-        return `No ${FACETS_JSON} in ${data.directory}. Run facet_add to add a facet, or facet_browse to see what is on the registry.`;
+        // Always say where this was read and what pointed us there. An absence
+        // is only meaningful alongside the place it was observed, and the whole
+        // Defect A failure was an absence reported as if the place were obvious.
+        // A host that sets its own scratch directory as the project dir gets a
+        // true sentence naming that directory, rather than a verdict on the
+        // user's real project.
+        const provenance = data.rootLabel === "" ? data.directory : data.rootLabel;
+        return [
+            `No ${FACETS_JSON} in ${data.directory}.`,
+            `That directory came from: ${provenance}.`,
+            "If that is not your project, pass `directory`, or set FACET_PROJECT_ROOT to the right path.",
+        ].join("\n");
     }
     if (data.facets.length === 0) {
         return `${FACETS_JSON} in ${data.directory} declares no facets.`;
@@ -392,6 +412,19 @@ export function registerProject(server: McpServer, deps: RegistrationDeps & Proj
         const args = projectSchema.parse(rawArgs ?? {});
         try {
             const data = await readProject(args.directory, deps);
+
+            // The empty answer is the dangerous one. "declared: false, facets:
+            // []" reads as a fact about the user's project, and when the root
+            // was never confirmed it is a fact about a scratch directory
+            // instead. Say which directory was read and how to name the right
+            // one, rather than reporting an absence we cannot vouch for.
+            const root = rootReader(deps)();
+            if (!root.confirmed && args.directory === undefined && !data.declared) {
+                return {
+                    content: [{ type: "text", text: unconfirmedRootMessage(root) }],
+                    isError: true,
+                };
+            }
             return {
                 content: [{ type: "text", text: toText(data) }],
                 structuredContent: data as unknown as Record<string, unknown>,

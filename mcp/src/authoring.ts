@@ -14,6 +14,7 @@ import { z } from "zod";
 import path from "node:path";
 import { readFile, stat, readdir } from "node:fs/promises";
 import { resolveDirectory } from "./tools.js";
+import { rootReader, type RootAware } from "./root.js";
 import { PANEL_RESOURCE_URI } from "./view/panel.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -127,14 +128,14 @@ async function readBuilt(dir: string): Promise<BuiltArchive[]> {
         .map(({ file, size }) => ({ file, size }));
 }
 
-export interface AuthorDeps {
+export interface AuthorDeps extends RootAware {
     /** The root every path is resolved under. Defaults to the process's cwd. */
     projectRoot?: string;
 }
 
 /** Reads one facet's manifest and whatever has been built from it. */
 export async function readManifest(directory: string | undefined, deps: AuthorDeps = {}): Promise<AuthorData> {
-    const root = path.resolve(deps.projectRoot ?? process.cwd());
+    const root = rootReader(deps)().path;
     const resolved = resolveDirectory(root, directory);
     if (!resolved.ok) {
         throw new Error(resolved.message);

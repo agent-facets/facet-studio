@@ -49,6 +49,8 @@ export interface DriftEntry {
 export interface InstalledData {
     project: string;
     directory: string;
+    /** Where that path came from, as the header shows it. */
+    rootLabel: string;
     declared: boolean;
     locked: boolean;
     facets: InstalledFacet[];
@@ -142,6 +144,7 @@ export function toInstalledData(value: unknown): InstalledData | undefined {
     return {
         project: stringOr(source.project),
         directory: stringOr(source.directory),
+        rootLabel: stringOr(source.rootLabel),
         declared: source.declared === true,
         locked: source.locked === true,
         facets: Array.isArray(source.facets)
@@ -164,7 +167,10 @@ export function renderInstalled(
 
     const head = element(doc, "header", "gallery-head");
     head.appendChild(element(doc, "p", "operation", "Installed here"));
-    head.appendChild(element(doc, "p", "gallery-count", data.directory));
+    // The path alone was never enough. When the root is wrong — a scratch
+    // directory the host chose — the screen used to look like a project with
+    // nothing in it, so the header says where this was read from and how.
+    head.appendChild(element(doc, "p", "gallery-count", data.rootLabel === "" ? data.directory : data.rootLabel));
     fragment.appendChild(head);
 
     if (data.drift.length > 0) {

@@ -18,14 +18,19 @@ import {
     ListToolsRequestSchema,
     McpError,
     ReadResourceRequestSchema,
+    RootsListChangedNotificationSchema,
     type ClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
 import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { ProjectRootHolder, describeNegotiation, resolveRootSync, type ProjectRoot, type RootDeps } from "./root.js";
 import { registerAuth } from "./auth.js";
 import { registerTools } from "./tools.js";
 import { registerBrowse } from "./browse.js";
 import { registerProject } from "./project.js";
 import { registerAuthoring } from "./authoring.js";
+import { registerCapabilities } from "./capabilities.js";
 import { primeResourceListing, registerPanel } from "./view/panel.js";
 
 // A Bun macro: this call runs while *this file* is being transpiled or bundled,
@@ -102,6 +107,12 @@ export interface RegistrationDeps extends StudioServerDeps {
     clientCapabilities: ClientCapabilities | undefined;
     uiCapability: UiCapability;
     supportsUi: boolean;
+    /**
+     * Where the project is, read fresh on every tool call. Registration cannot
+     * wait for the client to answer `roots/list`, so this opens on the best
+     * synchronous answer and upgrades itself once the client replies.
+     */
+    rootHolder?: ProjectRootHolder;
 }
 
 export type RegisterAll = (server: McpServer, deps: RegistrationDeps) => void;
@@ -254,6 +265,9 @@ export function registerAll(server: McpServer, deps: RegistrationDeps): void {
         contain("authoring", () => {
             registerAuthoring(server, deps);
         }),
+        contain("capabilities", () => {
+            registerCapabilities(server, deps);
+        }),
         contain("auth", () => {
             registerAuth(server, deps);
         }),
@@ -277,6 +291,76 @@ export function registerAll(server: McpServer, deps: RegistrationDeps): void {
             failed.map(describe).join("; "),
         );
     }
+}
+
+/**
+ * Sets up the project root and keeps it current.
+ *
+ * The root starts as whatever can be worked out without talking to anyone —
+ * configuration, then the environment, then the working directory — because
+ * registration is synchronous and tools have to exist before the first call.
+ * Asking the client which folders it has open is a request, so it happens
+ * immediately afterwards and replaces that opening answer when it lands.
+ *
+ * Both the request and the subscription are conditional on the client actually
+ * advertising `roots`. Asking a client that never offered the capability earns
+ * a protocol error rather than an answer.
+ */
+function startRootHolder(
+    server: McpServer,
+    clientCapabilities: ClientCapabilities | undefined,
+    deps: StudioServerDeps,
+): ProjectRootHolder {
+    const supportsRoots = clientCapabilities?.roots !== undefined;
+
+    const rootDeps: RootDeps = {
+        ...(supportsRoots ? { listRoots: () => server.server.listRoots() } : {}),
+        // Which candidate root is the real project: the one with a facets.json
+        // in it. Only consulted when a client offers more than one folder.
+        hasProject: dir => existsSync(path.join(dir, "facets.json")),
+    };
+
+    const holder = new ProjectRootHolder(resolveRootSync(rootDeps), rootDeps);
+
+    // stdout is the protocol channel, so this goes to stderr, which hosts
+    // capture. Logged again after the roots round trip, because that is the one
+    // source that can change the answer after startup.
+    const report = (root: ProjectRoot): void => {
+        console.error(
+            describeNegotiation({
+                ui: getUiCapability(clientCapabilities) !== undefined,
+                roots: supportsRoots,
+                root,
+                looksLikeProject: existsSync(path.join(root.path, "facets.json")),
+            }),
+        );
+    };
+    const atStartup = holder.current();
+    report(atStartup);
+
+    if (supportsRoots) {
+        // Nothing waits on this. A client that is slow to answer just means the
+        // first call or two run against the synchronous answer, which is the
+        // same one they would have had anyway. Only a different answer is worth
+        // a second line — repeating the first one would just be noise.
+        void holder
+            .refresh()
+            .then(root => {
+                if (root.path !== atStartup.path || root.via !== atStartup.via) {
+                    report(root);
+                }
+            })
+            .catch(() => undefined);
+
+        server.server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+            await holder
+                .refresh()
+                .then(report)
+                .catch(() => undefined);
+        });
+    }
+
+    return holder;
 }
 
 /**
@@ -312,11 +396,13 @@ export function createServer(deps: StudioServerDeps = {}): McpServer {
         const failure = contain("registration", () => {
             const clientCapabilities = server.server.getClientCapabilities();
             const uiCapability = getUiCapability(clientCapabilities);
+            const rootHolder = startRootHolder(server, clientCapabilities, deps);
             register(server, {
                 ...deps,
                 clientCapabilities,
                 uiCapability,
                 supportsUi: uiCapability !== undefined,
+                rootHolder,
             });
         });
         if (failure !== undefined) {

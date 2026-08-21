@@ -31,10 +31,28 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MCP_ENTRY = join("mcp", "src", "server.ts");
 const MCP_BUNDLE = join("mcp", "server.mjs");
 
+// The shell launcher that starts the bundle, copied in beside it.
+const MCP_LAUNCHER = join("mcp", "launch.sh");
+
 // How Claude Code is told to launch the server. `${CLAUDE_PLUGIN_ROOT}` is
 // substituted by the plugin loader with wherever the plugin was installed, so
 // this stays a literal string here - it is not a template we fill in.
-const MCP_LAUNCH = { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"] };
+//
+// The launcher runs instead of `node` directly because GUI hosts start plugins
+// from launchd, with none of the user's shell profile: a version-managed Node
+// is invisible there and the server never starts. launch.sh recovers the real
+// PATH first. `/bin/sh` is spelled absolutely for the same reason - the PATH we
+// are handed is the thing we cannot trust. It is also why the launcher needs no
+// executable bit: sh is given the script to read, not asked to run it.
+// `${CLAUDE_PROJECT_DIR}` is the other half of the same problem: the host
+// starts the server wherever it likes, so the working directory says nothing
+// about where the user's project is. Claude Code substitutes this one for MCP
+// subprocesses, which turns the root from a guess into something we were told.
+const MCP_LAUNCH = {
+  command: "/bin/sh",
+  args: ["${CLAUDE_PLUGIN_ROOT}/mcp/launch.sh"],
+  env: { FACET_PROJECT_ROOT: "${CLAUDE_PROJECT_DIR}" },
+};
 
 // One file to copy, after both ends have been checked: where it is read from,
 // and where it is written to.
@@ -787,6 +805,15 @@ async function bundleMcpServer(srcDir: string, outDir: string): Promise<void> {
   if (!(await bundle.exists()) || bundle.size === 0) {
     throw new Error(`bundling ${MCP_ENTRY} reported success but wrote no bundle at ${outFile}`);
   }
+
+  // The launcher goes in beside the bundle. It is copied verbatim rather than
+  // generated, so the shipped file is the one that can be read and tested in
+  // the source tree.
+  const launcher = Bun.file(join(srcDir, MCP_LAUNCHER));
+  if (!(await launcher.exists())) {
+    throw new Error(`no MCP launcher at ${MCP_LAUNCHER}; plugin.json would point at a file that isn't there`);
+  }
+  await Bun.write(join(outDir, MCP_LAUNCHER), await launcher.arrayBuffer());
 }
 
 /**
@@ -797,7 +824,7 @@ async function bundleMcpServer(srcDir: string, outDir: string): Promise<void> {
  */
 function pathsToEmit(out: string, manifest: FacetManifest, hasMcpServer: boolean): string[] {
   const paths = [OUTPUT_MARKER, OUTPUT_MANIFEST, join(".claude-plugin", "plugin.json")];
-  if (hasMcpServer) paths.push(MCP_BUNDLE);
+  if (hasMcpServer) paths.push(MCP_BUNDLE, MCP_LAUNCHER);
   for (const asset of [...manifest.skills, ...manifest.agents, ...manifest.commands]) {
     paths.push(asset.body.outPath, ...asset.files.map((file) => file.outPath));
   }

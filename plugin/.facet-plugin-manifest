@@ -13,6 +13,7 @@
     "commands/facet-publish.md",
     "commands/facet-remove.md",
     "commands/facet-update.md",
+    "mcp/launch.sh",
     "mcp/server.mjs",
     "skills/authoring/SKILL.md",
     "skills/presentation/SKILL.md",

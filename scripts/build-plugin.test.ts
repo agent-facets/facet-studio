@@ -28,6 +28,9 @@ const INJECTION_DESCRIPTION = 'x: "y" # {z}\nnewline';
 // second module so the bundle has to inline a local import to work at all.
 const SERVER_GREETING = "fixture server online";
 
+// The launcher a fixture facet ships beside its server.
+const FIXTURE_LAUNCHER = '#!/bin/sh\nexec node "$(dirname -- "$0")/server.mjs" "$@"\n';
+
 interface FixtureOptions {
   skillDescription?: string;
   agentDescription?: string;
@@ -37,6 +40,8 @@ interface FixtureOptions {
    * that cannot possibly bundle (it imports a package that isn't installed).
    */
   mcpServer?: "working" | "broken";
+  /** Leave out mcp/launch.sh, to check the build refuses to ship without it. */
+  mcpLauncher?: "missing";
   /** Put the fixture in this directory instead of a fresh temp one. */
   dir?: string;
   /** Last word on facet.json: rewrite it however the test needs before it lands. */
@@ -58,6 +63,13 @@ async function writeFixtureFacet(opts: FixtureOptions = {}): Promise<string> {
         ? 'import { nope } from "@not-installed/definitely-missing";\nconsole.log(nope);\n'
         : 'import { GREETING } from "./greeting.ts";\nprocess.stdout.write(`${GREETING}\\n`);\n',
     );
+    // A facet with a server ships the launcher that starts it, so the fixture
+    // does too. The real one probes for a Node runtime; this one only has to
+    // hand off, because what the build cares about is that the file is there
+    // and arrives intact.
+    if (opts.mcpLauncher !== "missing") {
+      await Bun.write(join(src, "mcp", "launch.sh"), FIXTURE_LAUNCHER);
+    }
   }
 
   await mkdir(join(src, "skills", "using-facets"), { recursive: true });
@@ -368,11 +380,47 @@ describe("buildPlugin with an MCP server", () => {
       author: { name: "James Dunnam" },
       mcpServers: {
         "fixture-facet": {
-          command: "node",
-          args: ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"],
+          command: "/bin/sh",
+          args: ["${CLAUDE_PLUGIN_ROOT}/mcp/launch.sh"],
+          // Both literals are expanded by Claude Code, not by us. The project
+          // dir is how the server learns where the user's project is when the
+          // host started it somewhere else entirely.
+          env: { FACET_PROJECT_ROOT: "${CLAUDE_PROJECT_DIR}" },
         },
       },
     });
+  });
+
+  test("the launcher ships beside the bundle, byte-for-byte as written", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    // A copy, not a rewrite: what ships is the file that can be read and
+    // tested in the source tree, with nothing generated in between.
+    expect(await Bun.file(join(out, "mcp", "launch.sh")).text()).toBe(FIXTURE_LAUNCHER);
+  });
+
+  test("/bin/sh is spelled absolutely, because PATH is the thing that failed", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working" });
+    const out = await tempDir();
+    await buildPlugin(src, out);
+
+    // The whole point of the launcher is that the PATH a GUI host hands the
+    // plugin cannot be trusted to resolve anything. A bare "sh" here would
+    // reintroduce the bug one level up.
+    const manifest = await Bun.file(join(out, ".claude-plugin", "plugin.json")).json();
+    expect(manifest.mcpServers["fixture-facet"].command).toStartWith("/");
+  });
+
+  test("a server with no launcher is refused rather than shipped unstartable", async () => {
+    const src = await writeFixtureFacet({ mcpServer: "working", mcpLauncher: "missing" });
+    const out = await tempDir();
+
+    // plugin.json would otherwise name a launch script that isn't there, which
+    // plugin validation does not catch and the user only discovers as a server
+    // that will not start.
+    await expect(buildPlugin(src, out)).rejects.toThrow(/no MCP launcher/);
   });
 
   test("the declared bundle exists, is non-empty, and has the entry's local imports inlined", async () => {
@@ -387,8 +435,10 @@ describe("buildPlugin with an MCP server", () => {
     // inlined the module rather than leaving an import to resolve at run time.
     expect(await bundle.text()).toContain(SERVER_GREETING);
 
+    // Exactly two files land under mcp/: the bundle and the launcher that
+    // starts it. Nothing from mcp/src/ is copied through.
     const emitted = (await walk(out)).filter((rel) => rel.startsWith("mcp"));
-    expect(emitted).toEqual([join("mcp", "server.mjs")]);
+    expect(emitted).toEqual([join("mcp", "launch.sh"), join("mcp", "server.mjs")]);
   });
 
   test("the bundled server actually runs under node", async () => {

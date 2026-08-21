@@ -22,10 +22,11 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { execFile } from "node:child_process";
-import { lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { scrubSecrets } from "./auth.js";
+import { rootReader, unconfirmedRootMessage, type ProjectRoot } from "./root.js";
 import type { RegistrationDeps } from "./server.js";
 
 /** The panel every tool points at. mcp-panels registers the resource itself. */
@@ -290,7 +291,7 @@ export function createCliRunner(bin: string, timeoutMs: number): RunCli {
 // Results
 // ---------------------------------------------------------------------------
 
-export type ToolErrorCode = "invalid_input" | "cli_not_found" | "timeout" | "cli_failed" | "unreadable_output";
+export type ToolErrorCode = "invalid_input" | "no_project_root" | "cli_not_found" | "timeout" | "cli_failed" | "unreadable_output";
 
 export interface ToolError {
     code: ToolErrorCode;
@@ -660,6 +661,12 @@ export interface ToolSpec {
     directoryMode: DirectoryMode;
     /** Builds the argv array. `dir` is the already-validated absolute directory. */
     argv: (args: never, dir: string) => string[];
+    /**
+     * True for tools whose empty answer is a claim about the project — "no
+     * facets installed". Those must not run against a root nobody confirmed,
+     * because the answer would be a confident falsehood.
+     */
+    reportsAbsence?: boolean;
 }
 
 interface SpecInput<S extends z.ZodType<Record<string, unknown>>> {
@@ -704,6 +711,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
         output: "text",
         directoryMode: "cwd",
         argv: () => ["list"],
+        reportsAbsence: true,
     }),
     defineTool({
         name: "facet_verify",
@@ -831,7 +839,11 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
 // ---------------------------------------------------------------------------
 
 /** Runs one tool end to end: validate, resolve the directory, spawn, interpret. */
-export async function runTool(spec: ToolSpec, rawArgs: unknown, context: { projectRoot: string; runCli: RunCli }): Promise<CallToolResult> {
+export async function runTool(
+    spec: ToolSpec,
+    rawArgs: unknown,
+    context: { projectRoot: string; runCli: RunCli; root?: ProjectRoot },
+): Promise<CallToolResult> {
     // Commands that take the directory as an argument still run at the root, so
     // both branches end up with a path that went through the containment check.
     const root = resolveDirectory(context.projectRoot, ".");
@@ -853,6 +865,22 @@ export async function runTool(spec: ToolSpec, rawArgs: unknown, context: { proje
     const directory = resolveDirectory(context.projectRoot, args.directory);
     if (!directory.ok) {
         return render(fail("invalid_input", directory.message));
+    }
+
+    // A tool that reports absence has to be sure it looked in the right place.
+    // When nobody told us where the project is, an empty list would read as
+    // "this project has no facets" — a confident falsehood about a directory
+    // the user never named. Saying so is the only honest answer.
+    //
+    // An explicit `directory` counts as being told, and a facets.json means the
+    // fallback landed somewhere real, so neither case is stopped.
+    if (
+        spec.reportsAbsence === true &&
+        args.directory === undefined &&
+        context.root?.confirmed === false &&
+        !existsSync(path.join(directory.path, "facets.json"))
+    ) {
+        return render(fail("no_project_root", unconfirmedRootMessage(context.root)), directory.path);
     }
 
     // The CLI is given the resolved path, never the label the caller wrote, so
@@ -893,7 +921,9 @@ function describeIssues(error: z.ZodError): string {
  * The content is byte-identical either way.
  */
 export function registerTools(server: Pick<McpServer, "registerTool">, deps: ToolDeps = {}): void {
-    const projectRoot = path.resolve(deps.projectRoot ?? process.cwd());
+    // Read per call, not captured here: the client can open a different folder
+    // after registration, and the tools have to follow it.
+    const readRoot = rootReader(deps);
     const runCli = deps.runCli ?? createCliRunner(deps.facetBin ?? "facet", deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     for (const spec of TOOL_SPECS) {
@@ -903,7 +933,8 @@ export function registerTools(server: Pick<McpServer, "registerTool">, deps: Too
             inputSchema: spec.shape,
             annotations: spec.annotations,
         };
-        const handler = (rawArgs: unknown): Promise<CallToolResult> => runTool(spec, rawArgs, { projectRoot, runCli });
+        const handler = (rawArgs: unknown): Promise<CallToolResult> =>
+            runTool(spec, rawArgs, { projectRoot: readRoot().path, runCli, root: readRoot() });
 
         if (deps.supportsUi === true) {
             registerAppTool(server, spec.name, { ...config, _meta: { ui: { resourceUri: PANEL_RESOURCE_URI } } }, handler as never);

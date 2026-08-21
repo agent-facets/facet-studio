@@ -7,10 +7,13 @@
   },
   "mcpServers": {
     "facet-studio": {
-      "command": "node",
+      "command": "/bin/sh",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"
-      ]
+        "${CLAUDE_PLUGIN_ROOT}/mcp/launch.sh"
+      ],
+      "env": {
+        "FACET_PROJECT_ROOT": "${CLAUDE_PROJECT_DIR}"
+      }
     }
   }
 }
