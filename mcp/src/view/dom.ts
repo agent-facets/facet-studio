@@ -12,6 +12,8 @@
 
 import { ASSET_ACCENTS } from "./tokens.js";
 
+export const PANEL_PAYLOAD_KEY = "facet-studio/panel";
+
 export type PanelNode = object;
 
 export interface PanelElement {
@@ -196,6 +198,10 @@ export function firstText(result: unknown): string | undefined {
  */
 export function payloadOf(value: unknown, kind: string): Record<string, unknown> | undefined {
     const outer = asRecord(value);
+    const payload = asRecord(asRecord(asRecord(outer._meta)[PANEL_PAYLOAD_KEY]).payload);
+    if (firstString(payload.kind) === kind) {
+        return payload;
+    }
     const structured = asRecord(outer.structuredContent);
     if (firstString(structured.kind) === kind) {
         return structured;
