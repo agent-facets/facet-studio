@@ -40,6 +40,9 @@ import {
     type PanelElement,
     type PanelFragment,
 } from "./view/panel.js";
+import { toInstalledData } from "./view/installed.js";
+import { toAuthorData } from "./view/author.js";
+import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 
 /** A host that negotiated the MCP Apps UI extension. */
 const UI_CAPABLE: ClientCapabilities = { extensions: { [EXTENSION_ID]: {} } };
@@ -779,6 +782,153 @@ describe("registration failures", () => {
             await expect(client.listTools()).rejects.toThrow(/tools registrar/);
             await expect(client.listTools()).rejects.toThrow(/facet_list is already registered/);
             await expect(client.listTools()).rejects.not.toThrow(/telemetry down/);
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The panel envelope for project reads
+// ---------------------------------------------------------------------------
+//
+// Each project-reading tool now returns a panelEnvelope: full payload to `_meta`,
+// summary to structuredContent on apps hosts, unchanged on text hosts. These tests
+// verify that the summaries are properly shaped and that the real readers
+// reconstruct the payload correctly from the envelope.
+
+describe("facet_project and facet_manifest envelope round-trips", () => {
+    test("facet_project returns installed-summary for ui-capable hosts, and readers reconstruct the payload", async () => {
+        const previous = process.env.FACET_PROJECT_ROOT;
+        process.env.FACET_PROJECT_ROOT = process.cwd();
+        try {
+            await withHost(UI_CAPABLE, async client => {
+                const result = (await client.callTool({ name: "facet_project", arguments: {} })) as CallToolResult;
+                expect(result.isError).toBeUndefined();
+
+                // On a UI-capable host, structuredContent is the summary, not the full payload.
+                const summary = result.structuredContent as Record<string, unknown>;
+                expect(summary.kind).toBe("installed-summary");
+                expect(typeof summary.directory).toBe("string");
+                expect(typeof summary.count).toBe("number");
+                expect(Array.isArray(summary.names)).toBe(true);
+                expect(typeof summary.drift).toBe("number");
+
+                // The full payload is in _meta, where the panel reads it.
+                const meta = (result._meta as Record<string, unknown> | undefined)?.[PANEL_PAYLOAD_KEY] as Record<string, unknown> | undefined;
+                expect(meta).toBeDefined();
+                const payload = meta?.payload as Record<string, unknown> | undefined;
+                expect(payload).toBeDefined();
+
+                // The real reader reconstructs the full data from the envelope.
+                // Pass the full result since toInstalledData uses payloadOf which looks in _meta
+                const reconstructed = toInstalledData(result);
+                expect(reconstructed).toBeDefined();
+                expect(reconstructed?.directory).toBe(summary.directory);
+                expect(reconstructed?.facets.length).toBe(summary.count);
+                expect(reconstructed?.facets.map(f => f.name)).toEqual(summary.names);
+                expect(reconstructed?.drift.length).toBe(summary.drift);
+            });
+        } finally {
+            if (previous === undefined) delete process.env.FACET_PROJECT_ROOT;
+            else process.env.FACET_PROJECT_ROOT = previous;
+        }
+    });
+
+    test("facet_project returns full payload for text-only hosts", async () => {
+        const previous = process.env.FACET_PROJECT_ROOT;
+        process.env.FACET_PROJECT_ROOT = process.cwd();
+        try {
+            await withHost(TEXT_ONLY, async client => {
+                const result = (await client.callTool({ name: "facet_project", arguments: {} })) as CallToolResult;
+                expect(result.isError).toBeUndefined();
+
+                // On a text-only host, structuredContent is the full payload, unchanged.
+                const payload = result.structuredContent as Record<string, unknown>;
+                expect(payload.kind).toBe("installed");
+                expect(typeof payload.directory).toBe("string");
+
+                // No _meta on text hosts.
+                expect(result._meta).toBeUndefined();
+
+                // The reader works on the full result (payloadOf looks in structuredContent too).
+                const reconstructed = toInstalledData(result);
+                expect(reconstructed).toBeDefined();
+                expect(typeof reconstructed?.directory).toBe("string");
+            });
+        } finally {
+            if (previous === undefined) delete process.env.FACET_PROJECT_ROOT;
+            else process.env.FACET_PROJECT_ROOT = previous;
+        }
+    });
+
+    test("facet_manifest returns author-summary for ui-capable hosts, and readers reconstruct the payload", async () => {
+        await withHost(UI_CAPABLE, async client => {
+            await withScratchDirectory(async directory => {
+                // Create a facet so facet_manifest has something to read.
+                await client.callTool({
+                    name: "facet_create",
+                    arguments: { name: "envelope-test", directory, skills: ["test"] },
+                });
+
+                const result = (await client.callTool({
+                    name: "facet_manifest",
+                    arguments: { directory },
+                })) as CallToolResult;
+                expect(result.isError).toBeUndefined();
+
+                // On a UI-capable host, structuredContent is the summary, not the full payload.
+                const summary = result.structuredContent as Record<string, unknown>;
+                expect(summary.kind).toBe("author-summary");
+                expect(summary.present).toBe(true);
+                expect(typeof summary.name).toBe("string");
+                expect(typeof summary.version).toBe("string");
+                expect(typeof summary.assets).toBe("number");
+
+                // The full payload is in _meta, where the panel reads it.
+                const meta = (result._meta as Record<string, unknown> | undefined)?.[PANEL_PAYLOAD_KEY] as Record<string, unknown> | undefined;
+                expect(meta).toBeDefined();
+                const payload = meta?.payload as Record<string, unknown> | undefined;
+                expect(payload).toBeDefined();
+
+                // The real reader reconstructs the full data from the envelope.
+                // Pass the full result since toAuthorData uses payloadOf which looks in _meta
+                const reconstructed = toAuthorData(result);
+                expect(reconstructed).toBeDefined();
+                expect(reconstructed?.present).toBe(true);
+                expect(reconstructed?.name).toBe(summary.name);
+                expect(reconstructed?.version).toBe(summary.version);
+                expect(reconstructed?.assets.length).toBe(summary.assets);
+            });
+        });
+    });
+
+    test("facet_manifest returns full payload for text-only hosts", async () => {
+        await withHost(TEXT_ONLY, async client => {
+            await withScratchDirectory(async directory => {
+                // Create a facet so facet_manifest has something to read.
+                await client.callTool({
+                    name: "facet_create",
+                    arguments: { name: "envelope-text-test", directory, skills: ["test"] },
+                });
+
+                const result = (await client.callTool({
+                    name: "facet_manifest",
+                    arguments: { directory },
+                })) as CallToolResult;
+                expect(result.isError).toBeUndefined();
+
+                // On a text-only host, structuredContent is the full payload, unchanged.
+                const payload = result.structuredContent as Record<string, unknown>;
+                expect(payload.kind).toBe("author");
+                expect(payload.present).toBe(true);
+
+                // No _meta on text hosts.
+                expect(result._meta).toBeUndefined();
+
+                // The reader works on the full result (payloadOf looks in structuredContent too).
+                const reconstructed = toAuthorData(result);
+                expect(reconstructed).toBeDefined();
+                expect(reconstructed?.present).toBe(true);
+            });
         });
     });
 });

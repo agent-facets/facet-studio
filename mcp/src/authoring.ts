@@ -20,7 +20,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "./server.js";
-import { readout } from "./surface.js";
+import { panelEnvelope, readout } from "./surface.js";
 
 export const FACET_JSON = "facet.json";
 
@@ -244,10 +244,17 @@ export function registerAuthoring(server: McpServer, deps: RegistrationDeps & Au
                       () => toText(data),
                   )
                 : toText(data);
-            return {
-                content: [{ type: "text", text }],
-                structuredContent: data as unknown as Record<string, unknown>,
-            };
+            return panelEnvelope(deps.supportsUi, {
+                text,
+                payload: data as unknown as Record<string, unknown>,
+                summary: {
+                    kind: "author-summary",
+                    present: data.present,
+                    name: data.name,
+                    version: data.version,
+                    assets: data.assets.length,
+                },
+            });
         } catch (error) {
             return {
                 content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],

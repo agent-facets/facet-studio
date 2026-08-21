@@ -23,7 +23,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "./server.js";
-import { readout } from "./surface.js";
+import { panelEnvelope, readout } from "./surface.js";
 
 export const FACETS_JSON = "facets.json";
 export const FACETS_LOCK = "facets.lock";
@@ -428,10 +428,17 @@ export function registerProject(server: McpServer, deps: RegistrationDeps & Proj
             }
             const count = data.facets.length === 1 ? "1 facet" : `${data.facets.length} facets`;
             const brief = `${count} installed in ${data.directory}, in the panel's Installed screen.`;
-            return {
-                content: [{ type: "text", text: readout(deps.supportsUi, brief, () => toText(data)) }],
-                structuredContent: data as unknown as Record<string, unknown>,
-            };
+            return panelEnvelope(deps.supportsUi, {
+                text: readout(deps.supportsUi, brief, () => toText(data)),
+                payload: data as unknown as Record<string, unknown>,
+                summary: {
+                    kind: "installed-summary",
+                    directory: data.directory,
+                    count: data.facets.length,
+                    names: data.facets.map(f => f.name),
+                    drift: data.drift.length,
+                },
+            });
         } catch (error) {
             return {
                 content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
