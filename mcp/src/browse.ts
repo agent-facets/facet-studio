@@ -11,7 +11,7 @@
 import { z } from "zod";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { DEFAULT_REGISTRY_URL, REQUEST_TIMEOUT_MS } from "./auth.js";
-import { readout } from "./surface.js";
+import { panelEnvelope, readout } from "./surface.js";
 import { PANEL_RESOURCE_URI } from "./view/panel.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -543,10 +543,19 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
                     : data.fallback === true
                       ? `Nothing matched "${data.query}" exactly, so the panel's Registry screen is showing everything published — ${count}${typeInfo}. Do not browse again.`
                       : `${count}${typeInfo} matching "${data.query}", in the panel's Registry screen.`;
-            return {
-                content: [{ type: "text", text: readout(deps.supportsUi, brief, () => toText(data)) }],
-                structuredContent: data as unknown as Record<string, unknown>,
+            const summary = {
+                kind: "gallery-summary",
+                query: data.query,
+                ...(data.type === undefined ? {} : { type: data.type }),
+                ...(data.fallback === undefined ? {} : { fallback: data.fallback }),
+                total: data.results.length,
+                names: data.results.map(facet => facet.name),
             };
+            return panelEnvelope(deps.supportsUi, {
+                text: readout(deps.supportsUi, brief, () => toText(data)),
+                payload: data as unknown as Record<string, unknown>,
+                summary,
+            });
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             return {
@@ -607,10 +616,17 @@ function registerDetail(server: Pick<McpServer, "registerTool">, deps: BrowseDep
         try {
             const data = await detail(args, deps);
             const brief = `${data.facet}@${data.version} is open in the panel: description, assets, and version history.`;
-            return {
-                content: [{ type: "text", text: readout(deps.supportsUi, brief, () => detailToText(data)) }],
-                structuredContent: data as unknown as Record<string, unknown>,
+            const summary = {
+                kind: "detail-summary",
+                facet: data.facet,
+                version: data.version,
+                versions: data.versions.length,
             };
+            return panelEnvelope(deps.supportsUi, {
+                text: readout(deps.supportsUi, brief, () => detailToText(data)),
+                payload: data as unknown as Record<string, unknown>,
+                summary,
+            });
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             return {
@@ -672,10 +688,18 @@ function registerReadme(server: Pick<McpServer, "registerTool">, deps: BrowseDep
                           `The README for ${args.name}@${args.version} is open in the panel.`,
                           () => data.text,
                       );
-            return {
-                content: [{ type: "text", text }],
-                structuredContent: data as unknown as Record<string, unknown>,
+            const summary = {
+                kind: "readme-summary",
+                facet: data.facet,
+                version: data.version,
+                file: data.file,
+                truncated: data.truncated,
             };
+            return panelEnvelope(deps.supportsUi, {
+                text,
+                payload: data as unknown as Record<string, unknown>,
+                summary,
+            });
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             return {

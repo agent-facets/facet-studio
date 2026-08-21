@@ -17,9 +17,11 @@ import {
     toDetailData,
     toGalleryData,
     toPanelData,
+    toReadmeData,
     type GalleryFacet,
     type PanelElement,
 } from "./view/panel.js";
+import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 import {
     buttonsLabelled,
     classes,
@@ -493,6 +495,126 @@ describe("browse end to end, tool result straight into the console", () => {
         expect(result.content[0].text).toContain("agent");
         expect(result.content[0].text).toContain("command");
         expect(result.content[0].text).toContain("server");
+
+        await client.close();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The envelope: apps hosts get a summary up front and the real payload in
+// _meta; text hosts see today's shape, unchanged.
+// ---------------------------------------------------------------------------
+
+describe("the envelope splits by who's asking", () => {
+    test("(a) apps host: facet_browse's structuredContent is a description-free summary, the real gallery rides in _meta, and the panel's own reader still reconstructs it", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, { supportsUi: true, fetchFacets: async () => REGISTRY_RESPONSE });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
+        const structured = result.structuredContent as Record<string, unknown>;
+        expect(structured.kind).toBe("gallery-summary");
+        expect(JSON.stringify(structured)).not.toContain("description");
+
+        const meta = result._meta as Record<string, unknown>;
+        const payload = (meta[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
+        expect(payload.kind).toBe("gallery");
+
+        // The seam: the real reader, not a hand-checked shape, reconstructs the gallery.
+        const gallery = toGalleryData(result);
+        expect(gallery?.results.map(f => f.name)).toEqual(["worktrunk", "graphite"]);
+
+        await client.close();
+    });
+
+    test("(b) text-only host: facet_browse keeps today's byte-identical shape — full gallery in structuredContent, no _meta payload", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, { fetchFacets: async () => REGISTRY_RESPONSE });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
+        const structured = result.structuredContent as Record<string, unknown>;
+        expect(structured.kind).toBe("gallery");
+        expect(result._meta).toBeUndefined();
+
+        await client.close();
+    });
+
+    test("(c) an apps-host result with _meta stripped out matches no reader — the fall-through property", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, { supportsUi: true, fetchFacets: async () => REGISTRY_RESPONSE });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
+        const stripped = { ...result, _meta: undefined };
+        expect(toGalleryData(stripped)).toBeUndefined();
+
+        await client.close();
+    });
+
+    test("(d) facet_detail and facet_readme carry the same split, and toReadmeData gets its first coverage", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, {
+            supportsUi: true,
+            fetchFacets: async (url: string) => {
+                if (url.endsWith("/versions/0.1.0")) {
+                    return { name: "worktrunk", version: "0.1.0", versions: ["0.0.9", "0.1.0"] };
+                }
+                if (url.endsWith("/contents")) {
+                    return { files: [{ kind: "text", path: "README.md", content: "# Worktrunk\nSetup details." }] };
+                }
+                return {
+                    name: "worktrunk",
+                    version: "0.1.0",
+                    description: "Worktrunk-first git-worktree guidance for coding agents.",
+                    publisher: "julian",
+                    published_at: "2026-07-29T16:32:42.307Z",
+                    asset_counts: { skills: 1, commands: 1 },
+                    manifest_json: JSON.stringify({
+                        skills: { "using-worktrunk": { description: "Route worktree work through wt." } },
+                    }),
+                };
+            },
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const detailResult = (await client.callTool({
+            name: "facet_detail",
+            arguments: { name: "worktrunk", version: "0.1.0" },
+        })) as Record<string, unknown>;
+        const detailStructured = detailResult.structuredContent as Record<string, unknown>;
+        expect(detailStructured.kind).toBe("detail-summary");
+        expect(JSON.stringify(detailStructured)).not.toContain("description");
+        const detailMeta = detailResult._meta as Record<string, unknown>;
+        const detailPayload = (detailMeta[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
+        expect(detailPayload.kind).toBe("detail");
+        const detailData = toDetailData(detailResult);
+        expect(detailData?.description).toBe("Worktrunk-first git-worktree guidance for coding agents.");
+
+        const readmeResult = (await client.callTool({
+            name: "facet_readme",
+            arguments: { name: "worktrunk", version: "0.1.0" },
+        })) as Record<string, unknown>;
+        const readmeStructured = readmeResult.structuredContent as Record<string, unknown>;
+        expect(readmeStructured.kind).toBe("readme-summary");
+        expect(JSON.stringify(readmeStructured)).not.toContain("description");
+        const readmeMeta = readmeResult._meta as Record<string, unknown>;
+        const readmePayload = (readmeMeta[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
+        expect(readmePayload.kind).toBe("readme");
+        const readmeData = toReadmeData(readmeResult);
+        expect(readmeData?.text).toContain("Setup details.");
 
         await client.close();
     });
