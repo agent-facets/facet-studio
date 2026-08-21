@@ -11,6 +11,7 @@ import {
     button,
     element,
     firstString,
+    payloadOf,
     requireDocument,
     type PanelDocument,
     type PanelElement,
@@ -93,13 +94,7 @@ function toCount(value: unknown): GalleryCount | undefined {
 
 /** Reads a detail result, or returns undefined when this isn't one. */
 export function toDetailData(value: unknown): DetailData | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "detail"
-        ? structured
-        : firstString(outer.kind) === "detail"
-          ? outer
-          : undefined;
+    const source = payloadOf(value, "detail");
     if (source === undefined) {
         return undefined;
     }
@@ -128,13 +123,7 @@ export function toDetailData(value: unknown): DetailData | undefined {
 
 /** Reads a README result, or returns undefined when this isn't one. */
 export function toReadmeData(value: unknown): ReadmeData | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "readme"
-        ? structured
-        : firstString(outer.kind) === "readme"
-          ? outer
-          : undefined;
+    const source = payloadOf(value, "readme");
     if (source === undefined) {
         return undefined;
     }

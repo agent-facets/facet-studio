@@ -11,6 +11,7 @@ import {
     button,
     element,
     firstString,
+    payloadOf,
     requireDocument,
     type PanelDocument,
     type PanelElement,
@@ -38,6 +39,7 @@ export interface GalleryData {
     query: string;
     /** True when the query matched nothing and the list is everything published. */
     fallback?: boolean;
+    type?: string;
     results: GalleryFacet[];
 }
 
@@ -118,13 +120,7 @@ export function toGalleryFacet(value: unknown): GalleryFacet | undefined {
  * else belongs to another screen.
  */
 export function toGalleryData(value: unknown): GalleryData | undefined {
-    const outer = asRecord(value);
-    const structured = asRecord(outer.structuredContent);
-    const source = firstString(structured.kind) === "gallery"
-        ? structured
-        : firstString(outer.kind) === "gallery"
-          ? outer
-          : undefined;
+    const source = payloadOf(value, "gallery");
     if (source === undefined) {
         return undefined;
     }
@@ -134,6 +130,7 @@ export function toGalleryData(value: unknown): GalleryData | undefined {
     return {
         query: firstString(source.query) ?? "",
         ...(source.fallback === true ? { fallback: true } : {}),
+        ...(firstString(source.type) === undefined ? {} : { type: firstString(source.type) }),
         results,
     };
 }
