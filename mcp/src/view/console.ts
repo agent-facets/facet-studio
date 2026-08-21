@@ -236,7 +236,7 @@ export class ConsoleController {
             this.set({
                 screen: "registry",
                 registry: gallery,
-                gallery: { ...emptyGalleryState(), draft: gallery.query },
+                gallery: { ...emptyGalleryState(), filter: gallery.type ?? "all", draft: gallery.query },
                 loading: null,
             });
             return;
@@ -338,7 +338,7 @@ export class ConsoleController {
         // that produced the result on screen.
         this.set({
             loading: null,
-            ...(data === undefined ? {} : { registry: data, gallery: { ...emptyGalleryState(), draft: query } }),
+            ...(data === undefined ? {} : { registry: data, gallery: { ...emptyGalleryState(), filter: data.type ?? "all", draft: query } }),
         });
     }
 

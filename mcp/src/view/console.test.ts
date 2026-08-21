@@ -725,4 +725,103 @@ describe("the registry screen", () => {
         buttonsLabelled(mount, "Skills")[0]?.click();
         expect(text(mount)).toContain("facet-00");
     });
+
+    test("chip pre-selection: browse result with type: 'skill' filters to skills", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async query => ({
+                    query,
+                    type: "skill",
+                    results: [facetNamed("git-skills"), facetNamed("web-skills")],
+                }),
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        // Skills chip is pre-selected with filter-on class.
+        const skillsChip = buttonsLabelled(mount, "Skills")[0];
+        expect(skillsChip?.className).toContain("filter-on");
+
+        // Both results are drawn (both have skills asset).
+        expect(text(mount)).toContain("git-skills");
+        expect(text(mount)).toContain("web-skills");
+    });
+
+    test("chip pre-selection: browse result without type defaults to 'all'", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async query => ({
+                    query,
+                    results: [facetNamed("some-facet")],
+                }),
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        // Everything chip is pre-selected with filter-on class.
+        const everythingChip = buttonsLabelled(mount, "Everything")[0];
+        expect(everythingChip?.className).toContain("filter-on");
+
+        // Results are drawn.
+        expect(text(mount)).toContain("some-facet");
+    });
+
+    test("chip pre-selection: user clicking another chip overrides the pre-selected filter", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async query => ({
+                    query,
+                    type: "skill",
+                    results: [facetNamed("test-facet")],
+                }),
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        // Skills chip is initially on.
+        expect(buttonsLabelled(mount, "Skills")[0]?.className).toContain("filter-on");
+
+        // User clicks Agents chip.
+        buttonsLabelled(mount, "Agents")[0]?.click();
+
+        // Agents chip is now on, Skills is off.
+        expect(buttonsLabelled(mount, "Agents")[0]?.className).toContain("filter-on");
+        expect(buttonsLabelled(mount, "Skills")[0]?.className).not.toContain("filter-on");
+    });
+
+    test("degraded path: summary result without _meta self-loads registry via browse", async () => {
+        const browseCount = { calls: 0 };
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async () => {
+                    browseCount.calls++;
+                    return { query: "", results: [facetNamed("loaded-facet")] };
+                },
+            }),
+        );
+
+        // Deliver a summary-kind result with no _meta (what a _meta-stripping host would hand to toolresult).
+        deliver(
+            controller,
+            { structuredContent: { kind: "gallery-summary", names: ["skill1", "skill2"] } },
+            "facet_browse",
+        );
+        await Bun.sleep(0);
+
+        // browse was called once and the registry screen renders its result.
+        expect(browseCount.calls).toBe(1);
+        expect(controller.snapshot().screen).toBe("registry");
+        expect(text(mount)).toContain("loaded-facet");
+    });
 });
