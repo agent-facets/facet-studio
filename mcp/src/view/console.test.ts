@@ -611,7 +611,10 @@ describe("the authoring screen", () => {
 // ---------------------------------------------------------------------------
 
 /** A gallery facet the way ports.browse hands one over. */
-function facetNamed(name: string): {
+function facetNamed(
+    name: string,
+    counts?: { type: string; label: string }[],
+): {
     name: string;
     version: string;
     description: string;
@@ -625,7 +628,7 @@ function facetNamed(name: string): {
         description: `The ${name} facet.`,
         publisher: "julian",
         published: "Jul 29",
-        counts: [{ type: "skill", label: "1 Skill" }],
+        counts: counts ?? [{ type: "skill", label: "1 Skill" }],
     };
 }
 
@@ -699,7 +702,7 @@ describe("the registry screen", () => {
         const names = Array.from({ length: 20 }, (_, i) => `facet-${String(i).padStart(2, "0")}`);
         const controller = consoleOn(
             mount,
-            stubPorts({ browse: async query => ({ query, results: names.map(facetNamed) }) }),
+            stubPorts({ browse: async query => ({ query, results: names.map(name => facetNamed(name)) }) }),
         );
         controller.start("registry");
         await Bun.sleep(0);
@@ -734,7 +737,11 @@ describe("the registry screen", () => {
                 browse: async query => ({
                     query,
                     type: "skill",
-                    results: [facetNamed("git-skills"), facetNamed("web-skills")],
+                    results: [
+                        facetNamed("git-skills"),
+                        facetNamed("web-skills"),
+                        facetNamed("agent-only", [{ type: "agent", label: "1 Agent" }]),
+                    ],
                 }),
             }),
         );
@@ -745,9 +752,10 @@ describe("the registry screen", () => {
         const skillsChip = buttonsLabelled(mount, "Skills")[0];
         expect(skillsChip?.className).toContain("filter-on");
 
-        // Both results are drawn (both have skills asset).
+        // Only skill-carrying facets are drawn; agent-only is filtered out.
         expect(text(mount)).toContain("git-skills");
         expect(text(mount)).toContain("web-skills");
+        expect(text(mount)).not.toContain("agent-only");
     });
 
     test("chip pre-selection: browse result without type defaults to 'all'", async () => {
