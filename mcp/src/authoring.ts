@@ -20,6 +20,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "./server.js";
+import { readout } from "./surface.js";
 
 export const FACET_JSON = "facet.json";
 
@@ -233,8 +234,18 @@ export function registerAuthoring(server: McpServer, deps: RegistrationDeps & Au
         const args = manifestSchema.parse(rawArgs ?? {});
         try {
             const data = await readManifest(args.directory, deps);
+            // A missing facet.json is told in full either way — "nothing here,
+            // and what to do about it" is the message, and the panel's empty
+            // Authoring screen doesn't carry the second half.
+            const text = data.present
+                ? readout(
+                      deps.supportsUi,
+                      `${data.name}@${data.version} is open in the panel's Authoring screen.`,
+                      () => toText(data),
+                  )
+                : toText(data);
             return {
-                content: [{ type: "text", text: toText(data) }],
+                content: [{ type: "text", text }],
                 structuredContent: data as unknown as Record<string, unknown>,
             };
         } catch (error) {

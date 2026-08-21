@@ -36,6 +36,13 @@ export interface CapabilitiesData {
     consoleAvailable: boolean;
     /** Whether the host offered its open folders. */
     rootsAdvertised: boolean;
+    /**
+     * Always true. The registry is a remote catalog, so finding a facet has
+     * nothing to do with the current directory — and a caller that reads
+     * `projectFound: false` as "nothing works here" would be wrong. Stated as
+     * a field rather than left implied, so nothing has to infer it.
+     */
+    registryAvailable: true;
     projectRoot: string;
     /** Exactly what supplied the root: an env var's name, `roots/list`, or `cwd`. */
     rootVia: string;
@@ -53,6 +60,7 @@ export function readCapabilities(deps: RegistrationDeps & RootAware, root: Proje
         tier: deps.supportsUi === true ? "apps" : "text",
         consoleAvailable: deps.supportsUi === true,
         rootsAdvertised: deps.clientCapabilities?.roots !== undefined,
+        registryAvailable: true,
         projectRoot: root.path,
         rootVia: root.via,
         rootConfirmed: root.confirmed,
@@ -70,14 +78,25 @@ export function toText(data: CapabilitiesData): string {
         data.consoleAvailable
             ? "Console: available. This host renders MCP Apps, so facet tools open the panel and the user can act in it."
             : "Console: not available. This host did not negotiate MCP Apps, so prose is the only surface.",
-        `Project root: ${data.projectRoot} (via ${data.rootVia})`,
+        // Said before anything about the project, and unconditionally. Looking
+        // for facets is not a question about the current directory, and an
+        // agent that reads a missing project as "degraded" will fall back to
+        // prose for a request the Registry screen answers perfectly well.
+        "Registry: available. Browsing, searching, and reading facets need no project — facet_browse and facet_detail work anywhere, and open the Registry screen.",
     ];
-    if (!data.rootConfirmed) {
-        lines.push("That root is unconfirmed — nothing named a project, so it is the server's working directory.");
+
+    if (data.projectFound) {
+        lines.push(`Project: ${data.projectRoot} (via ${data.rootVia}).`);
+    } else {
+        lines.push(
+            `Project: none found at ${data.projectRoot} (via ${data.rootVia}).`,
+            "That limits only the project-scoped tools — facet_list, facet_project, facet_add, facet_remove, facet_update. Everything else is unaffected.",
+        );
+        if (!data.rootConfirmed) {
+            lines.push("Nothing named a project, so that path is just the server's working directory. Pass `directory` or set FACET_PROJECT_ROOT to work against a real one.");
+        }
     }
-    if (!data.projectFound) {
-        lines.push("No facets.json there, so any 'no facets' answer describes that directory and not necessarily the user's project.");
-    }
+
     if (data.otherRoots.length > 0) {
         lines.push(`Other folders the host has open: ${data.otherRoots.join(", ")}`);
     }

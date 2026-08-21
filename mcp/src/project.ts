@@ -23,6 +23,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "./server.js";
+import { readout } from "./surface.js";
 
 export const FACETS_JSON = "facets.json";
 export const FACETS_LOCK = "facets.lock";
@@ -403,7 +404,7 @@ export function registerProject(server: McpServer, deps: RegistrationDeps & Proj
     const config = {
         title: "Installed facets",
         description:
-            "Read what this project has installed: the facets facets.json declares, the versions facets.lock resolved, the assets each one carries, and any disagreement between the two files.",
+            "Read what this project has installed: the facets facets.json declares, the versions facets.lock resolved, the assets each one carries, and any disagreement between the two files. Only for questions about this project — a question about what exists or is available is facet_browse's, and needs no call here.",
         inputSchema: projectShape,
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     };
@@ -425,8 +426,10 @@ export function registerProject(server: McpServer, deps: RegistrationDeps & Proj
                     isError: true,
                 };
             }
+            const count = data.facets.length === 1 ? "1 facet" : `${data.facets.length} facets`;
+            const brief = `${count} installed in ${data.directory}, in the panel's Installed screen.`;
             return {
-                content: [{ type: "text", text: toText(data) }],
+                content: [{ type: "text", text: readout(deps.supportsUi, brief, () => toText(data)) }],
                 structuredContent: data as unknown as Record<string, unknown>,
             };
         } catch (error) {

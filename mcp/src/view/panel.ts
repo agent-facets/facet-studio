@@ -99,7 +99,13 @@ export function hostPorts(app: Pick<App, "callServerTool">): ConsolePorts {
         app.callServerTool({ name, arguments: args });
 
     return {
-        browse: async query => toGalleryData(await call("facet_browse", query === "" ? {} : { query })),
+        browse: async (query, limit) =>
+            toGalleryData(
+                await call("facet_browse", {
+                    ...(query === "" ? {} : { query }),
+                    ...(limit === undefined ? {} : { limit }),
+                }),
+            ),
         detail: async (name, version) =>
             toDetailData(await call("facet_detail", version === undefined ? { name } : { name, version })),
         readme: async (name, version) => toReadmeData(await call("facet_readme", { name, version })),

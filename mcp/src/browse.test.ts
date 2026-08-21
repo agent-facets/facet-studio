@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { browse, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT } from "./browse.js";
+import { browse, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT, MAX_LIMIT } from "./browse.js";
 import {
     ConsoleController,
     toDetailData,
@@ -142,6 +142,58 @@ describe("the request", () => {
 
         const fewer = await browse({ limit: 2 }, { fetchFacets: async () => many });
         expect(fewer.results).toHaveLength(2);
+    });
+
+    test("a query that matches nothing falls back to everything published, in the same call", async () => {
+        // The registry's search is literal; a phrase can miss a catalog that is
+        // all about it. An empty answer would just provoke a second browse from
+        // the caller — and a second widget — so this one call does the retry.
+        const everything = { facets: [{ name: "worktrunk" }, { name: "graphite" }] };
+        const asked: string[] = [];
+        const data = await browse(
+            { query: "dev workflow management" },
+            {
+                fetchFacets: async url => {
+                    asked.push(url);
+                    return url.includes("q=") ? { facets: [] } : everything;
+                },
+            },
+        );
+
+        expect(asked).toHaveLength(2);
+        expect(data.fallback).toBe(true);
+        expect(data.query).toBe("dev workflow management");
+        expect(data.results.map(facet => facet.name)).toEqual(["worktrunk", "graphite"]);
+        // And the text-only rendering says what happened.
+        expect(toText(data)).toContain("Nothing matched dev workflow management");
+    });
+
+    test("a hit skips the fallback, and an empty registry stays empty", async () => {
+        const asked: string[] = [];
+        const hit = await browse(
+            { query: "worktrunk" },
+            {
+                fetchFacets: async url => {
+                    asked.push(url);
+                    return { facets: [{ name: "worktrunk" }] };
+                },
+            },
+        );
+        expect(asked).toHaveLength(1);
+        expect(hit.fallback).toBe(false);
+
+        // No query and no facets: there is nothing to fall back to.
+        const empty = await browse({}, { fetchFacets: async () => ({ facets: [] }) });
+        expect(empty.fallback).toBe(false);
+        expect(empty.results).toEqual([]);
+    });
+
+    test("an oversized limit is clamped, not refused", async () => {
+        // A host's model asking for 50 is asking for "plenty", and the answer
+        // to that is the cap — never a validation error it can't act on.
+        const many = { facets: Array.from({ length: 40 }, (_, i) => ({ name: `f${i}` })) };
+        const clamped = await browse({ limit: 50 }, { fetchFacets: async () => many });
+        expect(clamped.results).toHaveLength(MAX_LIMIT);
     });
 });
 

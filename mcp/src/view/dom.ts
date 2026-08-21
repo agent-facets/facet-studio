@@ -21,8 +21,12 @@ export interface PanelElement {
     value?: string;
     appendChild(child: PanelNode): unknown;
     setAttribute(name: string, value: string): void;
-    /** Present on real elements; the interactive screens wire their buttons with it. */
-    addEventListener?(type: string, handler: () => void): void;
+    /**
+     * Present on real elements; the interactive screens wire their buttons with
+     * it. The event is optional so a test can fire a handler with nothing; the
+     * search box reads `key` from it to submit on Enter.
+     */
+    addEventListener?(type: string, handler: (event?: { key?: string }) => void): void;
 }
 
 export interface PanelFragment {

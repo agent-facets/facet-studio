@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { DEFAULT_REGISTRY_URL, REQUEST_TIMEOUT_MS } from "./auth.js";
+import { readout } from "./surface.js";
 import { PANEL_RESOURCE_URI } from "./view/panel.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -70,6 +71,8 @@ export interface GalleryFacet {
 export interface GalleryData {
     kind: "gallery";
     query: string;
+    /** True when the query matched nothing and everything published is shown instead. */
+    fallback?: boolean;
     results: GalleryFacet[];
 }
 
@@ -142,9 +145,13 @@ export function toText(data: GalleryData): string {
         const parts = [`${facet.name}${version}${by}`, facet.description];
         return counts === "" ? `- ${parts.join(" — ")}` : `- ${parts.join(" — ")} (${counts})`;
     });
-    const heading = data.query === ""
-        ? `${data.results.length} facet${data.results.length === 1 ? "" : "s"} on the registry:`
-        : `${data.results.length} facet${data.results.length === 1 ? "" : "s"} matching ${data.query}:`;
+    const count = `${data.results.length} facet${data.results.length === 1 ? "" : "s"}`;
+    const heading =
+        data.query === ""
+            ? `${count} on the registry:`
+            : data.fallback === true
+              ? `Nothing matched ${data.query}, so here is everything published — ${count}:`
+              : `${count} matching ${data.query}:`;
     return [heading, ...lines].join("\n");
 }
 
@@ -415,8 +422,17 @@ export async function readme(args: { name: string; version: string }, deps: Brow
 }
 
 const browseShape = {
-    query: z.string().trim().max(200).optional().describe("Search term. Omit to list what is on the registry."),
-    limit: z.number().int().min(1).max(MAX_LIMIT).optional().describe(`Most results to return (default ${DEFAULT_LIMIT}).`),
+    query: z
+        .string()
+        .trim()
+        .max(200)
+        .optional()
+        .describe(
+            "One short literal term the user actually said, e.g. \"git\". Multi-word phrases match nothing. Omit for anything thematic — the full catalog is one page.",
+        ),
+    // No upper bound in the schema: a host model that asks for 50 should get
+    // the capped page, not a validation error it can do nothing about.
+    limit: z.number().int().min(1).optional().describe(`Most results to return (default ${DEFAULT_LIMIT}, capped at ${MAX_LIMIT}).`),
 };
 
 const browseSchema = z.object(browseShape);
@@ -426,7 +442,7 @@ export async function browse(args: { query?: string; limit?: number }, deps: Bro
     const env = deps.env ?? process.env;
     const base = stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
     const query = args.query?.trim() ?? "";
-    const limit = args.limit ?? DEFAULT_LIMIT;
+    const limit = Math.min(args.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
 
     const url = new URL(`${base}/v0/facets`);
     if (query !== "") {
@@ -435,11 +451,26 @@ export async function browse(args: { query?: string; limit?: number }, deps: Bro
     url.searchParams.set("sort", query === "" ? "recent" : "relevance");
 
     const fetchFacets = deps.fetchFacets ?? defaultFetch;
-    const parsed = SearchResponse.parse(await fetchFacets(url.toString()));
+    let parsed = SearchResponse.parse(await fetchFacets(url.toString()));
+
+    // The registry's search is literal, and a phrase like "dev workflow
+    // management" matches nothing even when half the catalog is about exactly
+    // that. An empty answer here just makes the caller ask again without the
+    // query — a second call, a second widget — so the fallback happens in this
+    // one call instead: everything published, marked as such, with the query
+    // kept so the screen can say what didn't match.
+    let fallback = false;
+    if (query !== "" && parsed.facets.length === 0) {
+        const everything = new URL(`${base}/v0/facets`);
+        everything.searchParams.set("sort", "recent");
+        parsed = SearchResponse.parse(await fetchFacets(everything.toString()));
+        fallback = true;
+    }
 
     return {
         kind: "gallery",
         query,
+        fallback,
         results: parsed.facets.slice(0, limit).map(toGalleryFacet),
     };
 }
@@ -467,7 +498,12 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
         description:
             "Search the Agent Facets registry and show the matching facets — what each one does, " +
             "who published it, and what is inside it. Use this whenever someone asks what facets " +
-            "exist, what is available, or wants to find a facet to install.",
+            "exist, what is available, or wants to find a facet to install. Call it AT MOST ONCE " +
+            "per question — every call renders its own panel, and the user can refine the search " +
+            "inside it. The registry search is literal, so for a thematic question (git tools, " +
+            "workflow helpers) omit the query, browse everything — the catalog is small — and " +
+            "judge relevance from the one result. Never issue several browses with different " +
+            "phrasings of the same question.",
         inputSchema: browseShape,
         annotations: {
             title: "Browse facets",
@@ -482,8 +518,15 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
         const args = browseSchema.parse(rawArgs ?? {});
         try {
             const data = await browse(args, deps);
+            const count = data.results.length === 1 ? "1 facet" : `${data.results.length} facets`;
+            const brief =
+                data.query === ""
+                    ? `${count} from the registry, in the panel's Registry screen.`
+                    : data.fallback === true
+                      ? `Nothing matched "${data.query}" exactly, so the panel's Registry screen is showing everything published — ${count}. Do not browse again.`
+                      : `${count} matching "${data.query}", in the panel's Registry screen.`;
             return {
-                content: [{ type: "text", text: toText(data) }],
+                content: [{ type: "text", text: readout(deps.supportsUi, brief, () => toText(data)) }],
                 structuredContent: data as unknown as Record<string, unknown>,
             };
         } catch (error) {
@@ -545,8 +588,9 @@ function registerDetail(server: Pick<McpServer, "registerTool">, deps: BrowseDep
         const args = detailSchema.parse(rawArgs ?? {});
         try {
             const data = await detail(args, deps);
+            const brief = `${data.facet}@${data.version} is open in the panel: description, assets, and version history.`;
             return {
-                content: [{ type: "text", text: detailToText(data) }],
+                content: [{ type: "text", text: readout(deps.supportsUi, brief, () => detailToText(data)) }],
                 structuredContent: data as unknown as Record<string, unknown>,
             };
         } catch (error) {
@@ -602,7 +646,14 @@ function registerReadme(server: Pick<McpServer, "registerTool">, deps: BrowseDep
         const args = readmeSchema.parse(rawArgs ?? {});
         try {
             const data = await readme(args, deps);
-            const text = data.file === "" ? `${args.name}@${args.version} ships no README.` : data.text;
+            const text =
+                data.file === ""
+                    ? `${args.name}@${args.version} ships no README.`
+                    : readout(
+                          deps.supportsUi,
+                          `The README for ${args.name}@${args.version} is open in the panel.`,
+                          () => data.text,
+                      );
             return {
                 content: [{ type: "text", text }],
                 structuredContent: data as unknown as Record<string, unknown>,

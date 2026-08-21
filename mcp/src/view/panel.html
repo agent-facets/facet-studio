@@ -307,6 +307,47 @@
         outline-offset: 2px;
       }
 
+      .searchbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .search-input {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .search-go {
+        flex: none;
+      }
+
+      .fallback-note {
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        font-size: 12px;
+        margin-bottom: 12px;
+      }
+
+      .pager {
+        align-items: center;
+        display: flex;
+        justify-content: space-between;
+        margin-top: 14px;
+      }
+
+      .pager-label {
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .pager-btn[disabled] {
+        cursor: default;
+        opacity: 0.4;
+        pointer-events: none;
+      }
+
       .filters {
         display: flex;
         flex-wrap: wrap;

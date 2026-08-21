@@ -19,6 +19,7 @@
 import { button, element, requireDocument, type PanelDocument, type PanelElement } from "./dom.js";
 import { renderStrip, type PanelData } from "./result.js";
 import {
+    BROWSE_LIMIT,
     emptyGalleryState,
     renderGallery,
     toGalleryData as readGallery,
@@ -81,7 +82,7 @@ export interface ModifyArgs {
 
 /** Everything the console asks the server to do. */
 export interface ConsolePorts {
-    browse(query: string): Promise<GalleryData | undefined>;
+    browse(query: string, limit?: number): Promise<GalleryData | undefined>;
     detail(name: string, version?: string): Promise<DetailData | undefined>;
     readme(name: string, version: string): Promise<ReadmeData | undefined>;
     project(): Promise<InstalledData | undefined>;
@@ -97,6 +98,13 @@ export interface ConsolePorts {
 
 export interface ConsoleState {
     screen: Screen;
+    /**
+     * Whether the Authoring tab is offered at all. Someone browsing or managing
+     * installs has no facet.json open and no use for it, so it stays out of the
+     * nav until an authoring result actually arrives — creating, modifying,
+     * building, verifying, or reading a manifest is what earns it a place.
+     */
+    authoring: boolean;
     /** The last operation's outcome, shown along the top. */
     strip?: PanelData;
     /** The screen currently fetching its own data, if any. */
@@ -114,6 +122,7 @@ export interface ConsoleState {
 export function emptyConsoleState(): ConsoleState {
     return {
         screen: "registry",
+        authoring: false,
         loading: null,
         gallery: emptyGalleryState(),
         detailState: emptyDetailState(),
@@ -151,7 +160,8 @@ export function renderShell(
     const nav = element(doc, "nav", "nav");
     nav.setAttribute("aria-label", "Facet Studio");
     const lit = navFor(state.screen);
-    for (const entry of NAV) {
+    const offered = state.authoring ? NAV : NAV.filter(entry => entry.key !== "author");
+    for (const entry of offered) {
         const on = lit === entry.key;
         const node = button(doc, on ? "nav-item nav-on" : "nav-item", entry.label, () => actions.go(entry.key));
         node.setAttribute("aria-current", on ? "page" : "false");
@@ -223,7 +233,12 @@ export class ConsoleController {
         // not for things that were looked up.
         const gallery = readGallery(result);
         if (gallery !== undefined) {
-            this.set({ screen: "registry", registry: gallery, gallery: emptyGalleryState(), loading: null });
+            this.set({
+                screen: "registry",
+                registry: gallery,
+                gallery: { ...emptyGalleryState(), draft: gallery.query },
+                loading: null,
+            });
             return;
         }
         const detail = readDetail(result);
@@ -243,7 +258,7 @@ export class ConsoleController {
         }
         const author = readAuthor(result);
         if (author !== undefined) {
-            this.set({ screen: "author", author, authorState: emptyAuthorState(), loading: null });
+            this.set({ screen: "author", authoring: true, author, authorState: emptyAuthorState(), loading: null });
             return;
         }
 
@@ -253,14 +268,31 @@ export class ConsoleController {
         void this.refreshFor(outcome.operation);
     }
 
-    /** Which screen an operation's name implies, so the right read is redone. */
+    /**
+     * Which screen a tool's name implies, so the console lands there and the
+     * right read is redone.
+     *
+     * This is the recovery path for a read that failed as much as the follow-up
+     * for an operation that ran. When the host's model calls facet_browse with
+     * arguments the schema refuses, the error goes on the strip — but the user
+     * asked about the registry, so the Registry screen opens and fetches itself
+     * with arguments known to be good, instead of stranding them on whatever
+     * screen happened to be up.
+     */
     private async refreshFor(operation: string): Promise<void> {
         const label = operation.toLowerCase();
-        if (/(add|remove|update|install|list)/.test(label)) {
+        if (/(browse|detail|readme)/.test(label)) {
+            this.set({ screen: "registry" });
+            await this.loadRegistry(this.state.registry?.query ?? "");
+            return;
+        }
+        if (/(add|remove|update|install|list|project)/.test(label)) {
+            this.set({ screen: "installed" });
             await this.loadInstalled();
             return;
         }
-        if (/(create|modify|build|verify|publish)/.test(label)) {
+        if (/(create|modify|build|verify|publish|manifest)/.test(label)) {
+            this.set({ screen: "author", authoring: true });
             await this.loadAuthor();
         }
     }
@@ -270,7 +302,8 @@ export class ConsoleController {
     // -----------------------------------------------------------------------
 
     go(screen: Screen): void {
-        this.set({ screen });
+        // Arriving at the Authoring screen by any road puts its tab in the nav.
+        this.set({ screen, ...(screen === "author" ? { authoring: true } : {}) });
         if (screen === "registry" && this.state.registry === undefined) {
             void this.loadRegistry("");
             return;
@@ -298,8 +331,15 @@ export class ConsoleController {
 
     private async loadRegistry(query: string): Promise<void> {
         this.set({ loading: "registry" });
-        const data = await this.ports.browse(query).catch(() => undefined);
-        this.set({ loading: null, ...(data === undefined ? {} : { registry: data, gallery: emptyGalleryState() }) });
+        // The panel pages locally, so it asks for the server's whole cap and
+        // lets the pager walk it, rather than fetching the six-row default.
+        const data = await this.ports.browse(query, BROWSE_LIMIT).catch(() => undefined);
+        // The draft survives the reset: the box should keep showing the words
+        // that produced the result on screen.
+        this.set({
+            loading: null,
+            ...(data === undefined ? {} : { registry: data, gallery: { ...emptyGalleryState(), draft: query } }),
+        });
     }
 
     private async loadInstalled(): Promise<void> {
@@ -325,9 +365,16 @@ export class ConsoleController {
 
     private galleryActions(): GalleryActions {
         return {
-            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type } }),
+            // A new filter starts from the first page — page numbers only mean
+            // anything against the list they were counted on.
+            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type, page: 0 } }),
             open: facet => void this.openDetail(facet.name, facet.version),
             install: facet => void this.installFromGallery(facet),
+            // Kept, not set: the box on screen already shows the keystroke, and
+            // a redraw here would replace the input under the user's cursor.
+            draft: value => this.keep({ gallery: { ...this.state.gallery, draft: value } }),
+            search: () => void this.loadRegistry(this.state.gallery.draft.trim()),
+            page: next => this.set({ gallery: { ...this.state.gallery, page: Math.max(0, next) } }),
         };
     }
 

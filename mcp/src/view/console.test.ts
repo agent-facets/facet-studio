@@ -110,6 +110,49 @@ describe("the console shell", () => {
         expect(controller.snapshot().strip?.status).toBe("error");
     });
 
+    test("the Authoring tab appears only once authoring actually happens", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                project: async () => toInstalledData(INSTALLED),
+                manifest: async () => toAuthorData(AUTHOR),
+            }),
+        );
+
+        // Browsing and managing installs offer no authoring — the tab is not
+        // in the nav for someone who is not writing a facet.
+        deliver(controller, INSTALLED, "Installed facets");
+        expect(buttonsLabelled(mount, "Registry")).toHaveLength(1);
+        expect(buttonsLabelled(mount, "Installed")).toHaveLength(1);
+        expect(buttonsLabelled(mount, "Authoring")).toHaveLength(0);
+
+        // An authoring result arriving is what earns the tab its place.
+        deliver(controller, AUTHOR, "Read facet manifest");
+        expect(buttonsLabelled(mount, "Authoring")).toHaveLength(1);
+        expect(controller.snapshot().screen).toBe("author");
+
+        // And it stays: moving away does not take the tab back out.
+        controller.go("installed");
+        await Bun.sleep(0);
+        expect(buttonsLabelled(mount, "Authoring")).toHaveLength(1);
+    });
+
+    test("an authoring operation summons the tab too", async () => {
+        const mount = root();
+        const controller = consoleOn(mount, stubPorts({ manifest: async () => toAuthorData(AUTHOR) }));
+        expect(buttonsLabelled(mount, "Authoring")).toHaveLength(0);
+
+        deliver(
+            controller,
+            { structuredContent: { facet: "demo", operation: "Verify facet", status: "success", message: "Verified.", assets: [] } },
+            "Verify facet",
+        );
+        await Bun.sleep(0);
+        expect(buttonsLabelled(mount, "Authoring")).toHaveLength(1);
+        expect(controller.snapshot().screen).toBe("author");
+    });
+
     test("the nav moves between screens and reads the one it lands on", async () => {
         const asked: string[] = [];
         const mount = root();
@@ -560,5 +603,126 @@ describe("the authoring screen", () => {
 
         expect(text(mount)).toContain("There is no facet.json here");
         expect(text(mount)).toContain("facet_create");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The registry screen
+// ---------------------------------------------------------------------------
+
+/** A gallery facet the way ports.browse hands one over. */
+function facetNamed(name: string): {
+    name: string;
+    version: string;
+    description: string;
+    publisher: string;
+    published: string;
+    counts: { type: string; label: string }[];
+} {
+    return {
+        name,
+        version: "1.0.0",
+        description: `The ${name} facet.`,
+        publisher: "julian",
+        published: "Jul 29",
+        counts: [{ type: "skill", label: "1 Skill" }],
+    };
+}
+
+describe("the registry screen", () => {
+    test("a failed browse lands on the registry and fetches it with arguments that work", async () => {
+        const calls: [string, number | undefined][] = [];
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async (query, limit) => {
+                    calls.push([query, limit]);
+                    return { query, results: [facetNamed("openspec")] };
+                },
+            }),
+        );
+
+        // The host's model asked for the registry and fumbled the arguments.
+        // The refusal goes on the strip — and the screen the user actually
+        // asked about opens anyway, read with arguments the console controls.
+        deliver(
+            controller,
+            { isError: true, content: [{ type: "text", text: "Invalid arguments for tool facet_browse" }] },
+            "facet_browse",
+        );
+        await Bun.sleep(0);
+
+        expect(controller.snapshot().screen).toBe("registry");
+        expect(calls).toEqual([["", 24]]);
+        expect(text(mount)).toContain("openspec");
+        expect(controller.snapshot().strip?.status).toBe("error");
+    });
+
+    test("the search box runs facet_browse and keeps its words", async () => {
+        const calls: [string, number | undefined][] = [];
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async (query, limit) => {
+                    calls.push([query, limit]);
+                    return { query, results: [] };
+                },
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        const box = fieldWithId(mount, "registry-search");
+        expect(box).toBeDefined();
+        box?.type("openspec");
+        buttonsLabelled(mount, "Search")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(calls).toEqual([
+            ["", 24],
+            ["openspec", 24],
+        ]);
+        // The redraw keeps what was searched in the box, not a blank field.
+        expect(fieldWithId(mount, "registry-search")?.value).toBe("openspec");
+
+        // Enter submits too, without needing the button.
+        fieldWithId(mount, "registry-search")?.type("cowsay");
+        fieldWithId(mount, "registry-search")?.fire("keydown", { key: "Enter" });
+        await Bun.sleep(0);
+        expect(calls[2]).toEqual(["cowsay", 24]);
+    });
+
+    test("results beyond a page sit behind the pager", async () => {
+        const mount = root();
+        const names = Array.from({ length: 20 }, (_, i) => `facet-${String(i).padStart(2, "0")}`);
+        const controller = consoleOn(
+            mount,
+            stubPorts({ browse: async query => ({ query, results: names.map(facetNamed) }) }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        // Eight cards on the first page, and the pager says where you are.
+        expect(buttonsLabelled(mount, "Install")).toHaveLength(8);
+        expect(text(mount)).toContain("facet-00");
+        expect(text(mount)).not.toContain("facet-08");
+        expect(text(mount)).toContain("1–8 of 20");
+
+        buttonsLabelled(mount, "Next ›")[0]?.click();
+        expect(text(mount)).toContain("facet-08");
+        expect(text(mount)).not.toContain("facet-00");
+        expect(text(mount)).toContain("9–16 of 20");
+
+        // The last page holds the remainder, and Next goes no further.
+        buttonsLabelled(mount, "Next ›")[0]?.click();
+        expect(text(mount)).toContain("17–20 of 20");
+        expect(buttonsLabelled(mount, "Install")).toHaveLength(4);
+
+        // A new filter starts back at the first page.
+        buttonsLabelled(mount, "‹ Prev")[0]?.click();
+        buttonsLabelled(mount, "Skills")[0]?.click();
+        expect(text(mount)).toContain("facet-00");
     });
 });

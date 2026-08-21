@@ -72,7 +72,10 @@ async function connect(options: { capabilities?: ClientCapabilities; projectRoot
             registerTools(target, { ...deps, projectRoot, runCli });
         },
     });
-    const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities: options.capabilities ?? UI_CAPABLE });
+    // Text-only by default: the mechanics tests read the full JSON envelope out
+    // of the text, and that is the text-only surface. Tests about the panel
+    // pass UI_CAPABLE themselves.
+    const client = new Client({ name: "test-host", version: "0.0.0" }, { capabilities: options.capabilities ?? TEXT_ONLY });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
@@ -314,7 +317,12 @@ describe("registration", () => {
         }
     });
 
-    test("content is identical with and without the panel", async () => {
+    test("the panel host gets one line of text; the text host gets the whole envelope", async () => {
+        // Same run, same summary — but the text is written for who reads it.
+        // With the panel on screen, a model that receives the full payload
+        // recites it under the widget, so the text shrinks to a line that says
+        // what happened and that the panel is already showing it. A text-only
+        // host still reads exactly what it always read.
         const projectRoot = scratch();
         const stdout = '{"schemaVersion":"2","ok":true,"verified":true}';
         const withPanel = await connect({ capabilities: UI_CAPABLE, projectRoot, cliResult: { stdout } });
@@ -322,8 +330,16 @@ describe("registration", () => {
         try {
             const a = await withPanel.client.callTool({ name: "facet_verify", arguments: {} });
             const b = await withoutPanel.client.callTool({ name: "facet_verify", arguments: {} });
-            expect(a.content).toEqual(b.content);
-            expect(payload(a).ok).toBe(true);
+
+            // One truth underneath: the summary the panel draws is identical.
+            expect(a.structuredContent).toEqual(b.structuredContent);
+
+            const briefText = (a.content as { text: string }[])[0]?.text ?? "";
+            expect(briefText).toContain("Verify facet succeeded");
+            expect(briefText).toContain("Do not restate");
+            expect(briefText).not.toContain("schemaVersion");
+
+            expect(payload(b).ok).toBe(true);
         } finally {
             await withPanel.close();
             await withoutPanel.close();

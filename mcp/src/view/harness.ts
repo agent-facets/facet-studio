@@ -21,7 +21,7 @@ export class Element extends Node {
     className = "";
     children: Node[] = [];
     attrs = new Map<string, string>();
-    handlers = new Map<string, (() => void)[]>();
+    handlers = new Map<string, ((event?: { key?: string }) => void)[]>();
     /** Set by the field helper; read back the way a real input is. */
     value = "";
 
@@ -38,16 +38,16 @@ export class Element extends Node {
         this.attrs.set(name, value);
     }
 
-    addEventListener(type: string, handler: () => void): void {
+    addEventListener(type: string, handler: (event?: { key?: string }) => void): void {
         const existing = this.handlers.get(type) ?? [];
         existing.push(handler);
         this.handlers.set(type, existing);
     }
 
     /** Fires every handler of a type, the way a real event would. */
-    fire(type: string): void {
+    fire(type: string, event?: { key?: string }): void {
         for (const handler of this.handlers.get(type) ?? []) {
-            handler();
+            handler(event);
         }
     }
 

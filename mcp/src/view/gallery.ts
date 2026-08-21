@@ -36,23 +36,40 @@ export interface GalleryFacet {
 /** A browse result, once it has been checked. */
 export interface GalleryData {
     query: string;
+    /** True when the query matched nothing and the list is everything published. */
+    fallback?: boolean;
     results: GalleryFacet[];
 }
 
 /** Where an install has got to. */
 export type InstallState = "idle" | "installing" | "installed" | "failed";
 
+/** Cards per page. The rest of a result set sits behind the pager. */
+export const PAGE_SIZE = 8;
+
+/**
+ * How many results the panel asks the server for in one browse. Matches the
+ * server's own cap (MAX_LIMIT in browse.ts) — the two are spelled separately
+ * because this file is bundled for the browser and must not pull in the
+ * server's node-side imports.
+ */
+export const BROWSE_LIMIT = 24;
+
 /** Everything the gallery draws that isn't the search result itself. */
 export interface GalleryState {
     /** `all`, or one asset type. */
     filter: string;
+    /** Which page of the filtered results is showing, from 0. */
+    page: number;
+    /** What is typed in the search box, not yet searched. */
+    draft: string;
     installs: Record<string, InstallState>;
     /** Why an install failed, keyed by facet name. */
     errors: Record<string, string>;
 }
 
 export function emptyGalleryState(): GalleryState {
-    return { filter: "all", installs: {}, errors: {} };
+    return { filter: "all", page: 0, draft: "", installs: {}, errors: {} };
 }
 
 /** What the gallery asks the console to do. */
@@ -60,6 +77,12 @@ export interface GalleryActions {
     install(facet: GalleryFacet): void;
     open(facet: GalleryFacet): void;
     filter(type: string): void;
+    /** Keeps the search box's text as it is typed, without a redraw. */
+    draft(value: string): void;
+    /** Runs the search the draft describes. */
+    search(): void;
+    /** Moves to a page of the current results. */
+    page(next: number): void;
 }
 
 function toGalleryCount(value: unknown): GalleryCount | undefined {
@@ -108,7 +131,11 @@ export function toGalleryData(value: unknown): GalleryData | undefined {
     const results = Array.isArray(source.results)
         ? source.results.map(toGalleryFacet).filter((facet): facet is GalleryFacet => facet !== undefined)
         : [];
-    return { query: firstString(source.query) ?? "", results };
+    return {
+        query: firstString(source.query) ?? "",
+        ...(source.fallback === true ? { fallback: true } : {}),
+        results,
+    };
 }
 
 /** The filters offered above the list, in the registry's order. */
@@ -139,6 +166,49 @@ const INSTALL_CLASSES: Record<InstallState, string> = {
     failed: "cta cta-failed",
 };
 
+/** The search box and its button, above the filters. */
+function searchBar(doc: PanelDocument, state: GalleryState, actions: GalleryActions): PanelElement {
+    const bar = element(doc, "div", "searchbar");
+
+    const input = element(doc, "input", "field-input search-input");
+    input.setAttribute("id", "registry-search");
+    input.setAttribute("type", "search");
+    input.setAttribute("placeholder", "Search the registry…");
+    input.setAttribute("aria-label", "Search the registry");
+    input.value = state.draft;
+    input.addEventListener?.("input", () => actions.draft(input.value ?? ""));
+    input.addEventListener?.("keydown", event => {
+        if (event?.key === "Enter") {
+            actions.search();
+        }
+    });
+    bar.appendChild(input);
+    bar.appendChild(button(doc, "cta cta-lead search-go", "Search", () => actions.search()));
+    return bar;
+}
+
+/** Prev / Next and where you are, under the list. Only drawn when there is more than a page. */
+function pager(doc: PanelDocument, page: number, pageCount: number, total: number, actions: GalleryActions): PanelElement {
+    const row = element(doc, "div", "pager");
+
+    const prev = button(doc, "filter pager-btn", "‹ Prev", () => actions.page(page - 1));
+    if (page === 0) {
+        prev.setAttribute("disabled", "disabled");
+    }
+    row.appendChild(prev);
+
+    const first = page * PAGE_SIZE + 1;
+    const last = Math.min(total, (page + 1) * PAGE_SIZE);
+    row.appendChild(element(doc, "p", "pager-label", `${first}–${last} of ${total}`));
+
+    const next = button(doc, "filter pager-btn", "Next ›", () => actions.page(page + 1));
+    if (page >= pageCount - 1) {
+        next.setAttribute("disabled", "disabled");
+    }
+    row.appendChild(next);
+    return row;
+}
+
 /** Draws the browse gallery: one card per facet. */
 export function renderGallery(
     data: GalleryData,
@@ -149,12 +219,25 @@ export function renderGallery(
     const fragment = doc.createDocumentFragment();
     const shown = data.results.filter(facet => matchesFilter(facet, state.filter));
 
+    // The page is clamped here rather than trusted, because a filter or a fresh
+    // search can shrink the result set under a page number that used to fit.
+    const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+    const page = Math.min(Math.max(state.page, 0), pageCount - 1);
+
     const head = element(doc, "header", "gallery-head");
     head.appendChild(element(doc, "p", "operation", data.query === "" ? "Registry" : `Search · ${data.query}`));
     head.appendChild(
         element(doc, "p", "gallery-count", `${shown.length} ${shown.length === 1 ? "facet" : "facets"}`),
     );
     fragment.appendChild(head);
+
+    fragment.appendChild(searchBar(doc, state, actions));
+
+    if (data.fallback === true && data.query !== "") {
+        fragment.appendChild(
+            element(doc, "p", "fallback-note", `Nothing matched “${data.query}” — showing everything published.`),
+        );
+    }
 
     const filters = element(doc, "div", "filters");
     for (const entry of FILTERS) {
@@ -187,10 +270,14 @@ export function renderGallery(
     }
 
     const list = element(doc, "div", "gallery");
-    for (const facet of shown) {
+    for (const facet of shown.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)) {
         list.appendChild(galleryCard(doc, facet, state, actions));
     }
     fragment.appendChild(list);
+
+    if (pageCount > 1) {
+        fragment.appendChild(pager(doc, page, pageCount, shown.length, actions));
+    }
     return fragment;
 }
 

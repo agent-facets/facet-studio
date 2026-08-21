@@ -205,7 +205,15 @@ describe("a host that starts the server outside the project", () => {
             expect(data.rootVia).toBe("cwd");
             expect(data.rootConfirmed).toBe(false);
             expect(data.projectFound).toBe(false);
-            expect(textOf(result)).toContain("unconfirmed");
+
+            // Looking for facets is not a question about the current
+            // directory. A missing project must never read as "degraded" —
+            // the registry is reachable from anywhere.
+            expect(data.registryAvailable).toBe(true);
+            const text = textOf(result);
+            expect(text).toContain("Registry: available");
+            expect(text.indexOf("Registry: available")).toBeLessThan(text.indexOf("Project: none"));
+            expect(text).toContain("Everything else is unaffected");
         } finally {
             await close();
         }

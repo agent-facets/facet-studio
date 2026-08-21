@@ -26,6 +26,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { scrubSecrets } from "./auth.js";
+import { panelShows } from "./surface.js";
 import { rootReader, unconfirmedRootMessage, type ProjectRoot } from "./root.js";
 import type { RegistrationDeps } from "./server.js";
 
@@ -97,7 +98,11 @@ export const directorySchema = z
     .refine(value => !value.startsWith("-"), "must not start with '-'")
     .refine(value => !CONTROL_CHARS.test(value), "must not contain control characters");
 
-const directoryField = directorySchema.optional().describe("Directory inside the project root. Defaults to the root itself.");
+const directoryField = directorySchema
+    .optional()
+    .describe(
+        "Directory inside the project root. Defaults to the root itself — omit it unless the user names one; a path outside the project root is refused.",
+    );
 const verboseField = z.boolean().optional().describe("Ask the CLI for detailed step output on stderr.");
 const acceptMcpField = z
     .boolean()
@@ -338,6 +343,8 @@ export interface OutcomeContext {
     operation: string;
     /** The resolved directory the run acted on. Only ever used for its name. */
     directory: string;
+    /** Whether the host renders the panel, which changes what the text says. */
+    supportsUi?: boolean;
 }
 
 /**
@@ -353,9 +360,22 @@ export interface OutcomeContext {
  * back at us cannot show up in one channel while the other looks clean.
  */
 export function renderOutcome(outcome: ToolOutcome, context: OutcomeContext): CallToolResult {
+    const summary = summarize(outcome, context);
+    // On a host with the panel, the strip along its top already reports this
+    // run, so the text is one clean line instead of the whole payload. Both
+    // views are built from the same scrubbed summary either way. A failure
+    // stays a plain sentence — the model relaying why something failed is
+    // exactly what should happen, so no note tells it to hold back.
+    const brief = `${summary.operation} ${summary.status === "success" ? "succeeded" : "failed"}: ${summary.message}`;
+    const uiText = outcome.ok ? panelShows(brief) : brief;
     return {
-        content: [{ type: "text", text: scrubSecrets(JSON.stringify(outcome, null, 2)) }],
-        structuredContent: summarize(outcome, context),
+        content: [
+            {
+                type: "text",
+                text: context.supportsUi === true ? uiText : scrubSecrets(JSON.stringify(outcome, null, 2)),
+            },
+        ],
+        structuredContent: summary,
         ...(outcome.ok ? {} : { isError: true }),
     };
 }
@@ -704,7 +724,8 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     defineTool({
         name: "facet_list",
         title: "List facets",
-        description: "List the facets a project declares, with their resolved versions.",
+        description:
+            "List the facets a project declares, with their resolved versions. Only for questions about this project — a question about what exists or is available is facet_browse's, and needs no call here.",
         schema: listArgs,
         shape: listArgs.shape,
         annotations: READ_ONLY,
@@ -842,7 +863,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
 export async function runTool(
     spec: ToolSpec,
     rawArgs: unknown,
-    context: { projectRoot: string; runCli: RunCli; root?: ProjectRoot },
+    context: { projectRoot: string; runCli: RunCli; root?: ProjectRoot; supportsUi?: boolean },
 ): Promise<CallToolResult> {
     // Commands that take the directory as an argument still run at the root, so
     // both branches end up with a path that went through the containment check.
@@ -854,7 +875,11 @@ export async function runTool(
     // root stands in for it, which only ever affects what the card calls the
     // facet when the CLI didn't say.
     const render = (outcome: ToolOutcome, directory: string = rootPath): CallToolResult =>
-        renderOutcome(outcome, { operation: spec.title, directory });
+        renderOutcome(outcome, {
+            operation: spec.title,
+            directory,
+            ...(context.supportsUi === undefined ? {} : { supportsUi: context.supportsUi }),
+        });
 
     const parsed = spec.schema.safeParse(rawArgs ?? {});
     if (!parsed.success) {
@@ -934,7 +959,12 @@ export function registerTools(server: Pick<McpServer, "registerTool">, deps: Too
             annotations: spec.annotations,
         };
         const handler = (rawArgs: unknown): Promise<CallToolResult> =>
-            runTool(spec, rawArgs, { projectRoot: readRoot().path, runCli, root: readRoot() });
+            runTool(spec, rawArgs, {
+                projectRoot: readRoot().path,
+                runCli,
+                root: readRoot(),
+                ...(deps.supportsUi === undefined ? {} : { supportsUi: deps.supportsUi }),
+            });
 
         if (deps.supportsUi === true) {
             registerAppTool(server, spec.name, { ...config, _meta: { ui: { resourceUri: PANEL_RESOURCE_URI } } }, handler as never);
