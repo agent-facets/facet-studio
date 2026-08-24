@@ -502,9 +502,9 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
     return {
         kind: "gallery",
         query,
-        fallback,
+        ...(fallback ? { fallback: true } : {}),
         ...(args.type === undefined ? {} : { type: args.type }),
-        ...(fallback ? {} : (parsed.next_cursor !== undefined ? { nextCursor: parsed.next_cursor } : {})),
+        ...(parsed.next_cursor !== undefined ? { nextCursor: parsed.next_cursor } : {}),
         results: results.slice(0, limit),
     };
 }
@@ -566,6 +566,7 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
                 query: data.query,
                 ...(data.type === undefined ? {} : { type: data.type }),
                 ...(data.fallback === undefined ? {} : { fallback: data.fallback }),
+                ...(data.nextCursor === undefined ? {} : { nextCursor: data.nextCursor }),
                 total: data.results.length,
                 names: data.results.map(facet => facet.name),
             };

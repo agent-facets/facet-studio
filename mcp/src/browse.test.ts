@@ -182,11 +182,11 @@ describe("the request", () => {
             },
         );
         expect(asked).toHaveLength(1);
-        expect(hit.fallback).toBe(false);
+        expect("fallback" in hit).toBe(false);
 
         // No query and no facets: there is nothing to fall back to.
         const empty = await browse({}, { fetchFacets: async () => ({ facets: [] }) });
-        expect(empty.fallback).toBe(false);
+        expect("fallback" in empty).toBe(false);
         expect(empty.results).toEqual([]);
     });
 
@@ -275,8 +275,7 @@ describe("the request", () => {
     });
 
     test("an empty cursor is rejected by validation", async () => {
-        const error = await browse({ query: "git", cursor: "" }, { fetchFacets: async () => ({ facets: [] }) }).catch(e => e);
-        expect(error).toBeDefined();
+        expect(() => browseSchema.parse({ cursor: "" })).toThrow();
     });
 
     test("a response with next_cursor yields payload.nextCursor", async () => {
@@ -305,7 +304,7 @@ describe("the request", () => {
         expect("nextCursor" in data).toBe(false);
     });
 
-    test("zero-hit fallback drops the cursor", async () => {
+    test("zero-hit fallback drops the cursor from the request but includes nextCursor if registry sends one", async () => {
         const asked: string[] = [];
         const cursor = "oldcursor";
         const data = await browse(
@@ -315,7 +314,7 @@ describe("the request", () => {
                     asked.push(url);
                     // First call: query with cursor returns nothing
                     if (url.includes("q=")) return { facets: [] };
-                    // Second call: fallback (no cursor sent) returns everything
+                    // Second call: fallback (no cursor sent) returns everything with next_cursor
                     return { facets: [{ name: "result" }], next_cursor: "fallback_cursor" };
                 },
             },
@@ -323,10 +322,10 @@ describe("the request", () => {
         expect(asked).toHaveLength(2);
         // First call should have cursor
         expect(asked[0]).toContain(`cursor=${encodeURIComponent(cursor)}`);
-        // Second call (fallback) should not have cursor
+        // Second call (fallback) should not have cursor in the URL
         expect(asked[1]).not.toContain("cursor=");
-        // Fallback results should not include nextCursor
-        expect("nextCursor" in data).toBe(false);
+        // Fallback results SHOULD include nextCursor from the fallback fetch
+        expect(data.nextCursor).toBe("fallback_cursor");
     });
 });
 
