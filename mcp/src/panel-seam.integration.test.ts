@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "./server.js";
 import { registerBrowse } from "./browse.js";
-import { registerProject } from "./project.js";
+import { registerProject, readProject } from "./project.js";
 import { registerAuthoring } from "./authoring.js";
 import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 import { toGalleryData, toDetailData, toReadmeData, toInstalledData, toAuthorData } from "./view/panel.js";
@@ -90,7 +90,11 @@ function writeProjectFixtures(dir: string): void {
  * version-history lookups, and its README contents. Shapes mirror the stubs
  * in browse.test.ts.
  */
-async function fetchFacets(url: string): Promise<unknown> {
+function makeFetchFacets(includeNextCursor = true): (url: string) => Promise<unknown> {
+    return async (url: string): Promise<unknown> => fetchFacetsImpl(url, includeNextCursor);
+}
+
+async function fetchFacetsImpl(url: string, includeNextCursor = true): Promise<unknown> {
     if (url.includes("/v0/facets/")) {
         if (url.endsWith("/contents")) {
             return {
@@ -118,7 +122,7 @@ async function fetchFacets(url: string): Promise<unknown> {
     }
     if (url.includes("/v0/facets")) {
         // The search endpoint.
-        return {
+        const result: { facets: Array<{ name: string; latest_version: string; published_at: string; description: string; owner: { username: string }; asset_counts: Record<string, number>; visibility: string }>; next_cursor?: string } = {
             facets: [
                 {
                     name: "skill-facet",
@@ -140,6 +144,10 @@ async function fetchFacets(url: string): Promise<unknown> {
                 },
             ],
         };
+        if (includeNextCursor) {
+            result.next_cursor = "page2_token";
+        }
+        return result;
     }
     throw new Error(`Unexpected URL: ${url}`);
 }
@@ -155,10 +163,19 @@ interface Harness {
  * seam that only registers the three enveloped registrars this test seam
  * needs, each handed the negotiated deps plus its own test-only collaborator.
  */
-async function connect(capabilities: ClientCapabilities, projectRoot: string): Promise<Harness> {
+async function connect(
+    capabilities: ClientCapabilities,
+    projectRoot: string,
+    fetchFacetsOverride?: (url: string) => Promise<unknown>,
+    installedFacets?: Record<string, string>,
+): Promise<Harness> {
     const server = createServer({
         registerAll: (target, deps) => {
-            registerBrowse(target, { ...deps, fetchFacets });
+            registerBrowse(target, {
+                ...deps,
+                fetchFacets: fetchFacetsOverride ?? makeFetchFacets(),
+                readProjectFn: installedFacets !== undefined ? (makeMockReadProjectFn(installedFacets) as any) : undefined,
+            });
             registerProject(target, { ...deps, projectRoot });
             registerAuthoring(target, { ...deps, projectRoot });
         },
@@ -188,6 +205,20 @@ function extractResult(result: unknown): { content: string; structuredContent: R
         content: typed.content?.[0]?.text ?? "",
         structuredContent: typed.structuredContent ?? {},
         meta: typed._meta,
+    };
+}
+
+/** Creates a mock readProject function with a stub-installed facet. */
+function makeMockReadProjectFn(installedFacets: Record<string, string>) {
+    return async (_dir: string | undefined): Promise<{ declared: boolean; facets: Array<{ name: string; installed: boolean; version: string }> }> => {
+        return {
+            declared: true,
+            facets: Object.entries(installedFacets).map(([name, version]) => ({
+                name,
+                installed: true,
+                version,
+            })),
+        };
     };
 }
 
@@ -247,6 +278,109 @@ describe("panel envelope seam", () => {
                 }
                 // The agent-only facet has no skill asset, so the filter drops it.
                 expect(data?.results.some(facet => facet.name === "agent-facet")).toBe(false);
+            } finally {
+                await harness.close();
+            }
+        });
+
+        test("UI client gets installed state and nextCursor in summary; payload carries both with parsed rows", async () => {
+            const projectRoot = scratch();
+            // Mock skill-facet installed at an older version
+            const harness = await connect(UI_CAPABLE, projectRoot, makeFetchFacets(true), { "skill-facet": "0.9.5" });
+            try {
+                const result = await harness.client.callTool({ name: "facet_browse", arguments: { query: "test" } });
+                const ui = extractResult(result);
+
+                // UI summary shape: gallery-summary with facets rows, nextCursor, no "names" key
+                expect(ui.structuredContent.kind).toBe("gallery-summary");
+                expect(ui.structuredContent.nextCursor).toBe("page2_token");
+                const summaryFacets = ui.structuredContent.facets as Array<{ name: string; version: string; description: string; counts: string; installed?: unknown }>;
+                expect(Array.isArray(summaryFacets)).toBe(true);
+                expect(summaryFacets.length).toBeGreaterThan(0);
+
+                // Check first facet (skill-facet, installed at older version)
+                const skillFacet = summaryFacets.find(f => f.name === "skill-facet");
+                expect(skillFacet).toBeDefined();
+                expect(skillFacet?.installed).toBeDefined();
+                expect((skillFacet?.installed as { version?: string; updateAvailable?: boolean })?.version).toBe("0.9.5");
+                expect((skillFacet?.installed as { version?: string; updateAvailable?: boolean })?.updateAvailable).toBe(true);
+
+                // Check second facet (agent-facet, not installed)
+                const agentFacet = summaryFacets.find(f => f.name === "agent-facet");
+                expect(agentFacet).toBeDefined();
+                expect(agentFacet?.installed).toBeUndefined();
+
+                // No "names" key in summary facets
+                for (const facet of summaryFacets) {
+                    expect((facet as Record<string, unknown>).names).toBeUndefined();
+                }
+
+                // Payload (in _meta) has the real gallery data
+                expect(ui.meta).toBeDefined();
+                const payload = (ui.meta?.[PANEL_PAYLOAD_KEY] as { payload?: Record<string, unknown> })?.payload;
+                expect(payload).toBeDefined();
+                expect(payload?.kind).toBe("gallery");
+                expect(payload?.nextCursor).toBe("page2_token");
+
+                const payloadResults = payload?.results as Array<{ name: string; installed?: { version: string; updateAvailable: boolean } }>;
+                expect(Array.isArray(payloadResults)).toBe(true);
+                const payloadSkillFacet = payloadResults.find(f => f.name === "skill-facet");
+                expect(payloadSkillFacet?.installed?.version).toBe("0.9.5");
+                expect(payloadSkillFacet?.installed?.updateAvailable).toBe(true);
+
+                // toGalleryData parses the raw result correctly
+                const data = toGalleryData(result);
+                expect(data).toBeDefined();
+                expect(data?.nextCursor).toBe("page2_token");
+                expect(data?.results.length).toBeGreaterThan(0);
+                const parsedSkillFacet = data?.results.find(f => f.name === "skill-facet");
+                expect(parsedSkillFacet?.installed?.version).toBe("0.9.5");
+                expect(parsedSkillFacet?.installed?.updateAvailable).toBe(true);
+            } finally {
+                await harness.close();
+            }
+        });
+
+        test("text-only client gets full gallery payload in structuredContent, no envelope", async () => {
+            const projectRoot = scratch();
+            // Mock skill-facet installed at an older version
+            const harness = await connect(TEXT_ONLY, projectRoot, makeFetchFacets(true), { "skill-facet": "0.9.5" });
+            try {
+                const result = await harness.client.callTool({ name: "facet_browse", arguments: { query: "test" } });
+                const text = extractResult(result);
+
+                // Text client: full gallery in structuredContent
+                expect(text.structuredContent.kind).toBe("gallery");
+                expect(text.structuredContent.query).toBe("test");
+                expect(text.structuredContent.nextCursor).toBe("page2_token");
+
+                const results = text.structuredContent.results as Array<{ name: string; installed?: { version: string; updateAvailable: boolean } }>;
+                expect(Array.isArray(results)).toBe(true);
+                const skillFacet = results.find(f => f.name === "skill-facet");
+                expect(skillFacet?.installed?.version).toBe("0.9.5");
+                expect(skillFacet?.installed?.updateAvailable).toBe(true);
+
+                // No _meta envelope for text-only
+                expect(text.meta).toBeUndefined();
+            } finally {
+                await harness.close();
+            }
+        });
+    });
+
+    describe("facet_contents", () => {
+        test("handles no-version case by resolving to latest and returning resolved version", async () => {
+            const projectRoot = scratch();
+            const harness = await connect(UI_CAPABLE, projectRoot);
+            try {
+                const result = await harness.client.callTool({ name: "facet_contents", arguments: { name: "test-facet" } });
+                const extracted = extractResult(result);
+
+                expect(extracted.structuredContent.kind).toBe("contents");
+                expect(extracted.structuredContent.facet).toBe("test-facet");
+                // Should resolve to latest version
+                expect(extracted.structuredContent.version).toBe("1.0.0");
+                expect(Array.isArray(extracted.structuredContent.assets)).toBe(true);
             } finally {
                 await harness.close();
             }
