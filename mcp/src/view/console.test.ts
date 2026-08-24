@@ -976,4 +976,147 @@ describe("the registry screen", () => {
         expect(buttonsLabelled(mount, "Retry")).toHaveLength(1);
         expect(text(mount)).toContain("network error");
     });
+
+    // -----------------------------------------------------------------------
+    // Load more
+    // -----------------------------------------------------------------------
+
+    test("Load more appends new results and dedupes by name, keeping first occurrence", async () => {
+        const calls: [string, number | undefined, string | undefined][] = [];
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async (query, limit, cursor) => {
+                    calls.push([query, limit, cursor]);
+                    if (cursor === undefined) {
+                        return {
+                            query,
+                            results: [
+                                facetNamed("facet-00"),
+                                facetNamed("facet-01"),
+                                facetNamed("facet-02"),
+                                facetNamed("facet-03"),
+                            ],
+                            nextCursor: "page2cursor",
+                        };
+                    } else if (cursor === "page2cursor") {
+                        return {
+                            query,
+                            results: [
+                                facetNamed("facet-03"), // Duplicate - should be skipped
+                                facetNamed("facet-04"),
+                                facetNamed("facet-05"),
+                            ],
+                            // No nextCursor - this is the last page
+                        };
+                    }
+                    return { query, results: [] };
+                },
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        // First page shows 4 facets
+        expect(text(mount)).toContain("facet-00");
+        expect(text(mount)).toContain("facet-03");
+        expect(text(mount)).not.toContain("facet-04");
+
+        // Load more button exists and is clickable
+        const loadMoreBtn = buttonsLabelled(mount, "Load more");
+        expect(loadMoreBtn).toHaveLength(1);
+
+        loadMoreBtn[0]?.click();
+        await Bun.sleep(0);
+
+        // After loading, page shows all 6 facets (4 original + 2 new, facet-03 deduplicated)
+        expect(text(mount)).toContain("facet-00");
+        expect(text(mount)).toContain("facet-04");
+        expect(text(mount)).toContain("facet-05");
+
+        // Load more button disappears because nextCursor is undefined
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(0);
+
+        // Verify cursor was passed correctly on second call
+        expect(calls).toEqual([
+            ["", 24, undefined],
+            ["", 24, "page2cursor"],
+        ]);
+    });
+
+    test("new search resets accumulated rows and cursor", async () => {
+        const browseCount = { calls: 0 };
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async (query, limit, cursor) => {
+                    browseCount.calls++;
+                    if (cursor === undefined) {
+                        return {
+                            query,
+                            results: [facetNamed("first-page-facet")],
+                            nextCursor: "page2",
+                        };
+                    }
+                    return { query, results: [facetNamed("second-page-facet")] };
+                },
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        expect(text(mount)).toContain("first-page-facet");
+        expect(text(mount)).not.toContain("second-page-facet");
+
+        // Simulate new search
+        const box = fieldWithId(mount, "registry-search");
+        box?.type("newquery");
+        buttonsLabelled(mount, "Search")[0]?.click();
+        await Bun.sleep(0);
+
+        // Old results are gone, new search results shown
+        expect(text(mount)).toContain("first-page-facet");
+        // Load more button should exist for new results
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
+
+        // Load more button is initially not loading
+        expect(buttonsLabelled(mount, "Loading…")).toHaveLength(0);
+    });
+
+    test("load-more shows loading state and handles errors by restoring the button", async () => {
+        const mount = root();
+        let shouldFail = false;
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async (query, limit, cursor) => {
+                    if (shouldFail && cursor !== undefined) {
+                        throw new Error("Network error");
+                    }
+                    return {
+                        query,
+                        results: cursor === undefined ? [facetNamed("facet-1")] : [facetNamed("facet-2")],
+                        nextCursor: cursor === undefined ? "cursor2" : undefined,
+                    };
+                },
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        // Load more exists and works
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
+
+        // Trigger failure
+        shouldFail = true;
+        buttonsLabelled(mount, "Load more")[0]?.click();
+        await Bun.sleep(0);
+
+        // After error, button is back and not disabled
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
+        const btn = buttonsLabelled(mount, "Load more")[0];
+        expect(btn?.attrs.get("disabled")).not.toBe("disabled");
+    });
 });

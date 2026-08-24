@@ -82,7 +82,7 @@ export interface ModifyArgs {
 
 /** Everything the console asks the server to do. */
 export interface ConsolePorts {
-    browse(query: string, limit?: number): Promise<GalleryData | undefined>;
+    browse(query: string, limit?: number, cursor?: string): Promise<GalleryData | undefined>;
     detail(name: string, version?: string): Promise<DetailData | undefined>;
     readme(name: string, version: string): Promise<ReadmeData | undefined>;
     project(): Promise<InstalledData | undefined>;
@@ -338,7 +338,46 @@ export class ConsoleController {
         // that produced the result on screen.
         this.set({
             loading: null,
-            ...(data === undefined ? {} : { registry: data, gallery: { ...emptyGalleryState(), filter: data.type ?? "all", draft: query } }),
+            ...(data === undefined
+                ? {}
+                : {
+                      registry: data,
+                      gallery: {
+                          ...emptyGalleryState(),
+                          filter: data.type ?? "all",
+                          draft: query,
+                          nextCursor: data.nextCursor,
+                      },
+                  }),
+        });
+    }
+
+    private async loadMore(): Promise<void> {
+        if (this.state.registry === undefined || this.state.gallery.nextCursor === undefined) {
+            return;
+        }
+        this.set({ gallery: { ...this.state.gallery, loadingMore: true } });
+        const data = await this.ports
+            .browse(this.state.registry.query, BROWSE_LIMIT, this.state.gallery.nextCursor)
+            .catch(() => undefined);
+        if (data === undefined) {
+            // On error, clear the loading state but keep the cursor so user can retry.
+            this.set({ gallery: { ...this.state.gallery, loadingMore: false } });
+            return;
+        }
+
+        // Append new results to existing ones, deduping by facet name (first occurrence wins).
+        const existingNames = new Set(this.state.registry.results.map(f => f.name));
+        const newFacets = data.results.filter(f => !existingNames.has(f.name));
+
+        this.set({
+            loading: null,
+            registry: {
+                ...this.state.registry,
+                results: [...this.state.registry.results, ...newFacets],
+                nextCursor: data.nextCursor,
+            },
+            gallery: { ...this.state.gallery, loadingMore: false, nextCursor: data.nextCursor },
         });
     }
 
@@ -367,7 +406,7 @@ export class ConsoleController {
         return {
             // A new filter starts from the first page — page numbers only mean
             // anything against the list they were counted on.
-            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type, page: 0 } }),
+            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type, page: 0, nextCursor: undefined } }),
             open: facet => void this.openDetail(facet.name, facet.version),
             install: facet => void this.installFromGallery(facet),
             update: (facet, version) => void this.updateFromGallery(facet, version),
@@ -376,6 +415,7 @@ export class ConsoleController {
             draft: value => this.keep({ gallery: { ...this.state.gallery, draft: value } }),
             search: () => void this.loadRegistry(this.state.gallery.draft.trim()),
             page: next => this.set({ gallery: { ...this.state.gallery, page: Math.max(0, next) } }),
+            more: () => void this.loadMore(),
         };
     }
 

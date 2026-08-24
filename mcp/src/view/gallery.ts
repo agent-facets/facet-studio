@@ -42,6 +42,8 @@ export interface GalleryData {
     /** True when the query matched nothing and the list is everything published. */
     fallback?: boolean;
     type?: string;
+    /** Opaque page token for fetching the next page of results. Omitted when no further page exists. */
+    nextCursor?: string;
     results: GalleryFacet[];
 }
 
@@ -70,10 +72,14 @@ export interface GalleryState {
     installs: Record<string, InstallState>;
     /** Why an install failed, keyed by facet name. */
     errors: Record<string, string>;
+    /** Opaque token for fetching the next page. Only set when more data is available. */
+    nextCursor?: string;
+    /** Whether a load-more fetch is in progress. */
+    loadingMore: boolean;
 }
 
 export function emptyGalleryState(): GalleryState {
-    return { filter: "all", page: 0, draft: "", installs: {}, errors: {} };
+    return { filter: "all", page: 0, draft: "", installs: {}, errors: {}, loadingMore: false };
 }
 
 /** What the gallery asks the console to do. */
@@ -89,6 +95,8 @@ export interface GalleryActions {
     search(): void;
     /** Moves to a page of the current results. */
     page(next: number): void;
+    /** Loads and appends the next page using the cursor. */
+    more(): void;
 }
 
 function toGalleryCount(value: unknown): GalleryCount | undefined {
@@ -146,6 +154,7 @@ export function toGalleryData(value: unknown): GalleryData | undefined {
         query: firstString(source.query) ?? "",
         ...(source.fallback === true ? { fallback: true } : {}),
         ...(firstString(source.type) === undefined ? {} : { type: firstString(source.type) }),
+        ...(firstString(source.nextCursor) === undefined ? {} : { nextCursor: firstString(source.nextCursor) }),
         results,
     };
 }
@@ -200,7 +209,15 @@ function searchBar(doc: PanelDocument, state: GalleryState, actions: GalleryActi
 }
 
 /** Prev / Next and where you are, under the list. Only drawn when there is more than a page. */
-function pager(doc: PanelDocument, page: number, pageCount: number, total: number, actions: GalleryActions): PanelElement {
+function pager(
+    doc: PanelDocument,
+    page: number,
+    pageCount: number,
+    total: number,
+    hasMore: boolean,
+    loadingMore: boolean,
+    actions: GalleryActions,
+): PanelElement {
     const row = element(doc, "div", "pager");
 
     const prev = button(doc, "filter pager-btn", "‹ Prev", () => actions.page(page - 1));
@@ -218,6 +235,14 @@ function pager(doc: PanelDocument, page: number, pageCount: number, total: numbe
         next.setAttribute("disabled", "disabled");
     }
     row.appendChild(next);
+
+    if (hasMore) {
+        const more = button(doc, "filter pager-btn", loadingMore ? "Loading…" : "Load more", () => actions.more());
+        if (loadingMore) {
+            more.setAttribute("disabled", "disabled");
+        }
+        row.appendChild(more);
+    }
     return row;
 }
 
@@ -287,8 +312,10 @@ export function renderGallery(
     }
     fragment.appendChild(list);
 
-    if (pageCount > 1) {
-        fragment.appendChild(pager(doc, page, pageCount, shown.length, actions));
+    if (pageCount > 1 || data.nextCursor !== undefined) {
+        fragment.appendChild(
+            pager(doc, page, pageCount, shown.length, data.nextCursor !== undefined, state.loadingMore, actions),
+        );
     }
     return fragment;
 }

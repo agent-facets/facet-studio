@@ -99,11 +99,12 @@ export function hostPorts(app: Pick<App, "callServerTool">): ConsolePorts {
         app.callServerTool({ name, arguments: args });
 
     return {
-        browse: async (query, limit) =>
+        browse: async (query, limit, cursor) =>
             toGalleryData(
                 await call("facet_browse", {
                     ...(query === "" ? {} : { query }),
                     ...(limit === undefined ? {} : { limit }),
+                    ...(cursor === undefined ? {} : { cursor }),
                 }),
             ),
         detail: async (name, version) =>
