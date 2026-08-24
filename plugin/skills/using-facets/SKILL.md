@@ -84,6 +84,10 @@ and `facet build` when you need to parse results. Always finish authoring with
 
 When the facet-studio MCP server is connected, prefer its `facet_*` tools over raw CLI calls — same operations, structured results, branded panels where the host renders them; load the `presentation` skill for output formatting. The CLI path below remains the fallback.
 
+### Discovery routing
+
+Questions about what facets exist, what they do, or which to install route to one `facet_browse` call—never a browse-then-detail chain, and never the CLI's `facet search` when the MCP server is connected. The browse result already answers the question.
+
 ## Headless environments
 
 In CI or sandboxes without a TTY:

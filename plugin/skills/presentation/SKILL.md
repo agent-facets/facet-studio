@@ -29,7 +29,7 @@ Where a host renders MCP Apps, every facet tool points at one panel, and that pa
 
 | Screen | Shows | Filled by |
 |---|---|---|
-| Registry | What is published, with an Install on each card | `facet_browse`, and `facet_detail` for one facet |
+| Registry | What is published, with an Install on each card | `facet_browse` for discovery; `facet_detail` when opening one facet |
 | Installed | What this project has, with Update, Remove and Repair | `facet_project` |
 | Authoring | The facet being written, with its fields and assets editable | `facet_manifest` |
 
@@ -39,6 +39,10 @@ Two consequences for how results are described in prose:
 - An **operation** — add, remove, update, install, modify, build, verify — puts its outcome on a strip above the screen, and the screen is re-read so it shows the state the operation produced. Describe the outcome in the CLI's own words, as a result card, exactly as if there were no panel.
 
 Publishing has no MCP tool. Direct people to `facet publish` or the `/facet-publish` command, and never imply the panel can publish.
+
+## Discovery is one call
+
+A question about what facets exist, what they do, or which are worth installing is answered by ONE `facet_browse` call. Do not follow it with `facet_detail`, `facet_contents`, or `facet_project`—the browse result already carries each facet's description, asset counts, and install state. The panel handles pagination itself; row click opens detail and Install/Update act in place.
 
 ## Host matrix
 
