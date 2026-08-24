@@ -42,7 +42,7 @@ Publishing has no MCP tool. Direct people to `facet publish` or the `/facet-publ
 
 ## Discovery is one call
 
-A question about what facets exist, what they do, or which are worth installing is answered by ONE `facet_browse` call. Do not follow it with `facet_detail`, `facet_contents`, or `facet_project`—the browse result already carries each facet's description, asset counts, and install state. The panel handles pagination itself; row click opens detail and Install/Update act in place.
+A question about what facets exist, what they do, or which are worth installing is answered by ONE `facet_browse` call. Do not follow it with `facet_detail`, `facet_contents`, or `facet_project`—the browse result already carries each facet's description, asset counts, and install state. The panel handles pagination itself; row click opens detail and Install/Update act in place. For `facet_contents`, `facet_readme`, and `facet_update`, a `version` argument is optional and defaults to the latest published release when omitted.
 
 ## Host matrix
 
