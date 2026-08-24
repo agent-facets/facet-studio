@@ -182,11 +182,11 @@ describe("the request", () => {
             },
         );
         expect(asked).toHaveLength(1);
-        expect("fallback" in hit).toBe(false);
+        expect(hit.fallback).toBe(false);
 
         // No query and no facets: there is nothing to fall back to.
         const empty = await browse({}, { fetchFacets: async () => ({ facets: [] }) });
-        expect("fallback" in empty).toBe(false);
+        expect(empty.fallback).toBe(false);
         expect(empty.results).toEqual([]);
     });
 
@@ -274,8 +274,22 @@ describe("the request", () => {
         expect(asked[0]).toContain(`cursor=${encodeURIComponent(cursor)}`);
     });
 
-    test("an empty cursor is rejected by validation", async () => {
-        expect(() => browseSchema.parse({ cursor: "" })).toThrow();
+    test("an empty cursor is rejected by the schema at the tool layer", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, { fetchFacets: async () => ({ facets: [] }) });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        const result = (await client.callTool({
+            name: "facet_browse",
+            arguments: { cursor: "" },
+        })) as { isError?: boolean; content: { text: string }[] };
+
+        expect(result.isError).toBe(true);
+
+        await client.close();
     });
 
     test("a response with next_cursor yields payload.nextCursor", async () => {
@@ -595,6 +609,48 @@ describe("the envelope splits by who's asking", () => {
         // The seam: the real reader, not a hand-checked shape, reconstructs the gallery.
         const gallery = toGalleryData(result);
         expect(gallery?.results.map(f => f.name)).toEqual(["worktrunk", "graphite"]);
+
+        await client.close();
+    });
+
+    test("nextCursor rides in both the apps-host summary and the payload when the registry sends one, and in neither when it doesn't", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, {
+            supportsUi: true,
+            fetchFacets: async () => ({ facets: [{ name: "git-tool" }], next_cursor: "page2" }),
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const withCursor = (await client.callTool({ name: "facet_browse", arguments: { query: "git" } })) as Record<string, unknown>;
+        const summaryWithCursor = withCursor.structuredContent as Record<string, unknown>;
+        expect(summaryWithCursor.nextCursor).toBe("page2");
+        const metaWithCursor = withCursor._meta as Record<string, unknown>;
+        const payloadWithCursor = (metaWithCursor[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
+        expect(payloadWithCursor.nextCursor).toBe("page2");
+
+        await client.close();
+    });
+
+    test("nextCursor is absent from both the apps-host summary and the payload when the registry sends none", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, {
+            supportsUi: true,
+            fetchFacets: async () => ({ facets: [{ name: "git-tool" }] }),
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const result = (await client.callTool({ name: "facet_browse", arguments: { query: "git" } })) as Record<string, unknown>;
+        const summary = result.structuredContent as Record<string, unknown>;
+        expect("nextCursor" in summary).toBe(false);
+        const meta = result._meta as Record<string, unknown>;
+        const payload = (meta[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
+        expect("nextCursor" in payload).toBe(false);
 
         await client.close();
     });

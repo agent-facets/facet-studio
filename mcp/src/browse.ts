@@ -502,8 +502,8 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
     return {
         kind: "gallery",
         query,
-        ...(fallback ? { fallback: true } : {}),
-        ...(args.type === undefined ? {} : { type: args.type }),
+        fallback,
+        type: args.type,
         ...(parsed.next_cursor !== undefined ? { nextCursor: parsed.next_cursor } : {}),
         results: results.slice(0, limit),
     };
