@@ -370,6 +370,7 @@ export class ConsoleController {
             filter: type => this.set({ gallery: { ...this.state.gallery, filter: type, page: 0 } }),
             open: facet => void this.openDetail(facet.name, facet.version),
             install: facet => void this.installFromGallery(facet),
+            update: (facet, version) => void this.updateFromGallery(facet, version),
             // Kept, not set: the box on screen already shows the keystroke, and
             // a redraw here would replace the input under the user's cursor.
             draft: value => this.keep({ gallery: { ...this.state.gallery, draft: value } }),
@@ -389,15 +390,28 @@ export class ConsoleController {
     }
 
     private async installFromGallery(facet: GalleryFacet): Promise<void> {
-        const current = this.state.gallery.installs[facet.name] ?? "idle";
+        await this.runGalleryAdd(facet.name, facet.version === "" ? undefined : facet.version);
+    }
+
+    /**
+     * Installs over a copy the server already reported as stale.
+     *
+     * Same machinery as a fresh install — the row's session state, once set,
+     * is what the card renders from, so it masks the now-out-of-date server
+     * snapshot without this ever touching `facet.installed` itself.
+     */
+    private async updateFromGallery(facet: GalleryFacet, version: string): Promise<void> {
+        await this.runGalleryAdd(facet.name, version);
+    }
+
+    private async runGalleryAdd(name: string, version: string | undefined): Promise<void> {
+        const current = this.state.gallery.installs[name] ?? "idle";
         if (current === "installing" || current === "installed") {
             return;
         }
-        this.setInstall(facet.name, "installing");
-        const outcome = await this.ports
-            .add(facet.name, facet.version === "" ? undefined : facet.version)
-            .catch(error => ({ ok: false, message: reasonFor(error) }));
-        this.setInstall(facet.name, outcome.ok ? "installed" : "failed", outcome.ok ? undefined : outcome.message);
+        this.setInstall(name, "installing");
+        const outcome = await this.ports.add(name, version).catch(error => ({ ok: false, message: reasonFor(error) }));
+        this.setInstall(name, outcome.ok ? "installed" : "failed", outcome.ok ? undefined : outcome.message);
         if (outcome.ok) {
             // The Installed screen is now out of date, whether or not anyone is
             // looking at it, so it gets re-read rather than left to go stale.

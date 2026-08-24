@@ -614,6 +614,7 @@ describe("the authoring screen", () => {
 function facetNamed(
     name: string,
     counts?: { type: string; label: string }[],
+    installed?: { version: string; updateAvailable: boolean },
 ): {
     name: string;
     version: string;
@@ -621,6 +622,7 @@ function facetNamed(
     publisher: string;
     published: string;
     counts: { type: string; label: string }[];
+    installed?: { version: string; updateAvailable: boolean };
 } {
     return {
         name,
@@ -629,6 +631,7 @@ function facetNamed(
         publisher: "julian",
         published: "Jul 29",
         counts: counts ?? [{ type: "skill", label: "1 Skill" }],
+        ...(installed === undefined ? {} : { installed }),
     };
 }
 
@@ -846,5 +849,131 @@ describe("the registry screen", () => {
         expect(browseCount.calls).toBe(1);
         expect(controller.snapshot().screen).toBe("registry");
         expect(text(mount)).toContain("loaded-facet");
+    });
+
+    // -----------------------------------------------------------------------
+    // Install state seeded from the server's join
+    // -----------------------------------------------------------------------
+
+    /** "Installed" labels a card CTA and the nav's own tab; this is the card's alone. */
+    function cardButtonsLabelled(node: Element, label: string): Element[] {
+        return buttonsLabelled(node, label).filter(button => !button.className.includes("nav-item"));
+    }
+
+    test("a not-installed row still runs today's install flow", async () => {
+        const added: string[] = [];
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                project: async () => toInstalledData(INSTALLED),
+                add: async (name, version) => {
+                    added.push(`${name}@${version ?? "latest"}`);
+                    return { ok: true };
+                },
+            }),
+        );
+        deliver(controller, { kind: "gallery", query: "", results: [facetNamed("openspec")] }, "facet_browse");
+
+        buttonsLabelled(mount, "Install")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(added).toEqual(["openspec@1.0.0"]);
+        expect(cardButtonsLabelled(mount, "Installed")).toHaveLength(1);
+    });
+
+    test("a server-installed row renders Installed, with no active Install button", () => {
+        const mount = root();
+        const controller = consoleOn(mount, stubPorts());
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                results: [facetNamed("graphite", undefined, { version: "1.0.0", updateAvailable: false })],
+            },
+            "facet_browse",
+        );
+
+        const installed = cardButtonsLabelled(mount, "Installed");
+        expect(installed).toHaveLength(1);
+        expect(installed[0]?.attrs.get("disabled")).toBe("true");
+        expect(buttonsLabelled(mount, "Install")).toHaveLength(0);
+    });
+
+    test("an update-available row offers Update to <registry version>, and it installs like today's flow", async () => {
+        const added: [string, string | undefined][] = [];
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                project: async () => toInstalledData(INSTALLED),
+                add: async (name, version) => {
+                    added.push([name, version]);
+                    return { ok: true };
+                },
+            }),
+        );
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                results: [facetNamed("graphite", undefined, { version: "0.1.0", updateAvailable: true })],
+            },
+            "facet_browse",
+        );
+
+        const update = buttonsStarting(mount, "Update to");
+        expect(update).toHaveLength(1);
+        expect(text(update[0])).toBe("Update to 1.0.0");
+
+        update[0]?.click();
+        await Bun.sleep(0);
+
+        expect(added).toEqual([["graphite", "1.0.0"]]);
+        expect(cardButtonsLabelled(mount, "Installed")).toHaveLength(1);
+    });
+
+    test("a failed update shows the error strip, same as a failed install", async () => {
+        const mount = root();
+        const controller = consoleOn(mount, stubPorts({ add: async () => ({ ok: false, message: "registry unreachable" }) }));
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                results: [facetNamed("graphite", undefined, { version: "0.1.0", updateAvailable: true })],
+            },
+            "facet_browse",
+        );
+
+        buttonsStarting(mount, "Update to")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(text(mount)).toContain("registry unreachable");
+        expect(buttonsLabelled(mount, "Retry")).toHaveLength(1);
+    });
+
+    test("session state wins: a failed update shows the failure, not the server's installed snapshot", async () => {
+        const mount = root();
+        const controller = consoleOn(mount, stubPorts({ add: async () => ({ ok: false, message: "network error" }) }));
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                results: [facetNamed("graphite", undefined, { version: "1.0.0", updateAvailable: true })],
+            },
+            "facet_browse",
+        );
+
+        buttonsStarting(mount, "Update to")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(cardButtonsLabelled(mount, "Installed")).toHaveLength(0);
+        expect(buttonsStarting(mount, "Update to")).toHaveLength(0);
+        expect(buttonsLabelled(mount, "Retry")).toHaveLength(1);
+        expect(text(mount)).toContain("network error");
     });
 });

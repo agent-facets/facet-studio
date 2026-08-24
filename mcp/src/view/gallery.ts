@@ -32,6 +32,8 @@ export interface GalleryFacet {
     publisher: string;
     published: string;
     counts: GalleryCount[];
+    /** This project's own copy, when the server could tell. Absent when it couldn't, or has none. */
+    installed?: { version: string; updateAvailable: boolean };
 }
 
 /** A browse result, once it has been checked. */
@@ -77,6 +79,8 @@ export function emptyGalleryState(): GalleryState {
 /** What the gallery asks the console to do. */
 export interface GalleryActions {
     install(facet: GalleryFacet): void;
+    /** Installs over a stale copy already on the project, at the registry's current version. */
+    update(facet: GalleryFacet, version: string): void;
     open(facet: GalleryFacet): void;
     filter(type: string): void;
     /** Keeps the search box's text as it is typed, without a redraw. */
@@ -94,6 +98,15 @@ function toGalleryCount(value: unknown): GalleryCount | undefined {
     return label === undefined ? undefined : { type: type ?? "unknown", label };
 }
 
+/** Reads the project's own copy of a facet off the wire, or undefined when there is none to trust. */
+function toInstalledSnapshot(value: unknown): { version: string; updateAvailable: boolean } | undefined {
+    const record = asRecord(value);
+    if (typeof record.version !== "string" || typeof record.updateAvailable !== "boolean") {
+        return undefined;
+    }
+    return { version: record.version, updateAvailable: record.updateAvailable };
+}
+
 export function toGalleryFacet(value: unknown): GalleryFacet | undefined {
     const record = asRecord(value);
     const name = firstString(record.name);
@@ -103,6 +116,7 @@ export function toGalleryFacet(value: unknown): GalleryFacet | undefined {
     const counts = Array.isArray(record.counts)
         ? record.counts.map(toGalleryCount).filter((count): count is GalleryCount => count !== undefined)
         : [];
+    const installed = toInstalledSnapshot(record.installed);
     return {
         name,
         version: firstString(record.version) ?? "",
@@ -110,6 +124,7 @@ export function toGalleryFacet(value: unknown): GalleryFacet | undefined {
         publisher: firstString(record.publisher) ?? "",
         published: firstString(record.published) ?? "",
         counts,
+        ...(installed === undefined ? {} : { installed }),
     };
 }
 
@@ -278,6 +293,35 @@ export function renderGallery(
     return fragment;
 }
 
+/**
+ * The card's install CTA, in precedence order: this session's own state
+ * (a just-run install or failure), then a stale server snapshot (Update),
+ * then an up-to-date one (disabled Installed), then plain Install.
+ */
+function installControl(
+    doc: PanelDocument,
+    facet: GalleryFacet,
+    session: InstallState | undefined,
+    actions: GalleryActions,
+): PanelElement {
+    if (session !== undefined) {
+        const button_ = button(doc, INSTALL_CLASSES[session], INSTALL_LABELS[session], () => actions.install(facet));
+        if (session === "installing" || session === "installed") {
+            button_.setAttribute("disabled", "true");
+        }
+        return button_;
+    }
+    if (facet.installed?.updateAvailable === true) {
+        return button(doc, "cta cta-lead", `Update to ${facet.version}`, () => actions.update(facet, facet.version));
+    }
+    if (facet.installed !== undefined) {
+        const installed = button(doc, INSTALL_CLASSES.installed, INSTALL_LABELS.installed, () => actions.install(facet));
+        installed.setAttribute("disabled", "true");
+        return installed;
+    }
+    return button(doc, INSTALL_CLASSES.idle, INSTALL_LABELS.idle, () => actions.install(facet));
+}
+
 function galleryCard(
     doc: PanelDocument,
     facet: GalleryFacet,
@@ -295,12 +339,11 @@ function galleryCard(
     }
     top.appendChild(heading);
 
-    const status = state.installs[facet.name] ?? "idle";
-    const install = button(doc, INSTALL_CLASSES[status], INSTALL_LABELS[status], () => actions.install(facet));
-    if (status === "installing" || status === "installed") {
-        install.setAttribute("disabled", "true");
-    }
-    top.appendChild(install);
+    // This session's own doings, once there are any, outrank whatever the
+    // server said the project looked like when the browse ran — a just-run
+    // install or failure is truer than that snapshot.
+    const session = state.installs[facet.name];
+    top.appendChild(installControl(doc, facet, session, actions));
     card.appendChild(top);
 
     if (facet.publisher !== "") {
@@ -311,7 +354,7 @@ function galleryCard(
     }
 
     const failure = state.errors[facet.name];
-    if (status === "failed" && failure !== undefined) {
+    if (session === "failed" && failure !== undefined) {
         card.appendChild(element(doc, "p", "facet-error", failure));
     }
 
