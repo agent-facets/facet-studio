@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "./server.js";
 import { registerBrowse } from "./browse.js";
-import { registerProject, readProject } from "./project.js";
+import { registerProject, readProject, type InstalledData } from "./project.js";
 import { registerAuthoring } from "./authoring.js";
 import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 import { toGalleryData, toDetailData, toReadmeData, toInstalledData, toAuthorData } from "./view/panel.js";
@@ -208,16 +208,35 @@ function extractResult(result: unknown): { content: string; structuredContent: R
     };
 }
 
-/** Creates a mock readProject function with a stub-installed facet. */
-function makeMockReadProjectFn(installedFacets: Record<string, string>) {
-    return async (_dir: string | undefined, _deps: unknown): Promise<{ declared: boolean; facets: Array<{ name: string; installed: boolean; version: string }> }> => {
+/**
+ * Creates a mock readProject with the given facets already installed.
+ *
+ * It returns a whole `InstalledData`, not just the two fields the browse join
+ * reads, so that a change to readProject's shape breaks this stub loudly here
+ * rather than being papered over at the call site.
+ */
+function makeMockReadProjectFn(installedFacets: Record<string, string>): typeof readProject {
+    return async (_directory, _deps): Promise<InstalledData> => {
         return {
+            kind: "installed",
+            project: "seam-fixture",
+            directory: "/seam-fixture",
+            rootLabel: "test fixture",
             declared: true,
+            locked: true,
             facets: Object.entries(installedFacets).map(([name, version]) => ({
                 name,
-                installed: true,
+                scope: name.startsWith("@") ? `${name.split("/")[0]}/` : "",
+                shortName: name.startsWith("@") ? (name.split("/")[1] ?? name) : name,
+                declared: version,
                 version,
+                origin: "registry",
+                from: "test fixture",
+                installed: true,
+                assets: [],
+                counts: [],
             })),
+            drift: [],
         };
     };
 }

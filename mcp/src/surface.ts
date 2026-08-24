@@ -50,9 +50,12 @@ export function readout(supportsUi: boolean | undefined, brief: string, full: ()
  *
  * On a text-only host `structuredContent` carries the full `payload`, byte-
  * identical to what every browse-family tool returned before this existed. On
- * a host with a panel, `structuredContent` shrinks to `summary` — names and
- * counts, nothing to recite — and the full `payload` moves to `_meta`, where
- * the panel's own readers pick it up. `summary.kind` has to be the "-summary"
+ * a host with a panel, `structuredContent` shrinks to `summary` — bounded
+ * per-facet rows, enough to answer the question that was asked without a
+ * second call, and no more — and the full `payload` moves to `_meta`, where
+ * the panel's own readers pick it up. What keeps the model from reciting the
+ * summary back is the instruction in `panelShows`, not a starved payload.
+ * `summary.kind` has to be the "-summary"
  * variant of the real kind: a host that strips `_meta` before handing the
  * result to its model must fail to match any reader and fall through, not
  * render an empty gallery because the summary happened to answer to the real
