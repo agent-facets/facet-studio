@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { browse, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT, MAX_LIMIT } from "./browse.js";
+import { browse, clip, countLine, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT, MAX_LIMIT } from "./browse.js";
 import type { InstalledData, InstalledFacet } from "./project.js";
 import {
     ConsoleController,
@@ -104,6 +104,79 @@ describe("the text fallback", () => {
     test("says plainly when nothing matched", async () => {
         const data = await browse({ query: "nope" }, { fetchFacets: async () => ({ facets: [] }) });
         expect(toText(data)).toBe("No facets matched nope.");
+    });
+
+    test("carries an install marker for an installed row, and none for the rest", async () => {
+        const data = await browse(
+            { query: "coding" },
+            {
+                fetchFacets: async () => REGISTRY_RESPONSE,
+                readProjectFn: async () => installedData([installedFacet({ name: "worktrunk", version: "0.1.0" })]),
+            },
+        );
+        const text = toText(data);
+        expect(text).toContain("worktrunk@0.1.0 · by julian — Worktrunk-first git-worktree guidance for coding agents. (1 Skill, 1 Command) · installed 0.1.0");
+        // graphite is not installed in this fixture, so its line carries no marker.
+        const graphiteLine = text.split("\n").find(line => line.startsWith("- graphite"));
+        expect(graphiteLine).not.toContain("· installed");
+        expect(graphiteLine).not.toContain("· update available");
+    });
+
+    test("shows an update-available marker when the locked version trails the registry's latest", async () => {
+        const data = await browse(
+            { query: "coding" },
+            {
+                fetchFacets: async () => REGISTRY_RESPONSE,
+                readProjectFn: async () => installedData([installedFacet({ name: "worktrunk", version: "0.0.9" })]),
+            },
+        );
+        expect(toText(data)).toContain("· update available: 0.0.9 → 0.1.0");
+    });
+
+    test("ends with a more-results line when nextCursor is present, and omits it otherwise", async () => {
+        const withCursor = await browse(
+            { query: "coding" },
+            { fetchFacets: async () => ({ ...REGISTRY_RESPONSE, next_cursor: "page2" }) },
+        );
+        expect(toText(withCursor)).toEndWith("More results available — search again with the cursor to page further.");
+
+        const withoutCursor = await browse({ query: "coding" }, { fetchFacets: async () => REGISTRY_RESPONSE });
+        expect(toText(withoutCursor)).not.toContain("More results available");
+    });
+});
+
+describe("clip", () => {
+    test("a 150-char sentence clips at a word boundary, ≤120 chars, ending …", () => {
+        const long =
+            "This is a sentence about a facet that runs long enough to definitely exceed the summary row's strict one hundred twenty character budget for clipping.";
+        expect(long.length).toBe(150);
+        const clipped = clip(long, 120);
+        expect(clipped.length).toBeLessThanOrEqual(120);
+        expect(clipped.endsWith("…")).toBe(true);
+        // Cut at a word boundary: what's left (minus the ellipsis) is a clean prefix of the source.
+        expect(long.startsWith(clipped.slice(0, -1))).toBe(true);
+        expect(clipped.slice(0, -1).endsWith(" ")).toBe(false);
+    });
+
+    test("an exactly-120-char description passes through untouched", () => {
+        const exact =
+            "Exactly one hundred and twenty characters long, this fixture description must survive clip() completely untouched today.";
+        expect(exact.length).toBe(120);
+        expect(clip(exact, 120)).toBe(exact);
+    });
+
+    test("a short description passes through untouched", () => {
+        expect(clip("Short.", 120)).toBe("Short.");
+    });
+});
+
+describe("countLine", () => {
+    test("renders counts as one compact, comma-joined line", () => {
+        expect(countLine(toCounts({ skills: 2, commands: 1 }))).toBe("2 Skills, 1 Command");
+    });
+
+    test("renders no counts as an empty line", () => {
+        expect(countLine([])).toBe("");
     });
 });
 
@@ -719,7 +792,7 @@ describe("browse end to end, tool result straight into the console", () => {
 // ---------------------------------------------------------------------------
 
 describe("the envelope splits by who's asking", () => {
-    test("(a) apps host: facet_browse's structuredContent is a description-free summary, the real gallery rides in _meta, and the panel's own reader still reconstructs it", async () => {
+    test("(a) apps host: facet_browse's structuredContent is a bounded row summary with enough per facet to answer without another call, the real gallery rides in _meta, and the panel's own reader still reconstructs it", async () => {
         const server = new McpServer({ name: "test", version: "0" });
         registerBrowse(server, { supportsUi: true, fetchFacets: async () => REGISTRY_RESPONSE });
 
@@ -730,7 +803,22 @@ describe("the envelope splits by who's asking", () => {
         const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
         const structured = result.structuredContent as Record<string, unknown>;
         expect(structured.kind).toBe("gallery-summary");
-        expect(JSON.stringify(structured)).not.toContain("description");
+        expect(structured.names).toBeUndefined();
+        const facets = structured.facets as { name: string; version: string; description: string; counts: string }[];
+        expect(facets).toEqual([
+            {
+                name: "worktrunk",
+                version: "0.1.0",
+                description: "Worktrunk-first git-worktree guidance for coding agents.",
+                counts: "1 Skill, 1 Command",
+            },
+            {
+                name: "graphite",
+                version: "0.1.0",
+                description: "Graphite-first version-control guidance for coding agents.",
+                counts: "1 Skill",
+            },
+        ]);
 
         const meta = result._meta as Record<string, unknown>;
         const payload = (meta[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
@@ -739,6 +827,27 @@ describe("the envelope splits by who's asking", () => {
         // The seam: the real reader, not a hand-checked shape, reconstructs the gallery.
         const gallery = toGalleryData(result);
         expect(gallery?.results.map(f => f.name)).toEqual(["worktrunk", "graphite"]);
+
+        await client.close();
+    });
+
+    test("an installed facet's row carries the installed object; an uninstalled one carries no installed key at all", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, {
+            supportsUi: true,
+            fetchFacets: async () => REGISTRY_RESPONSE,
+            readProjectFn: async () => installedData([installedFacet({ name: "worktrunk", version: "0.1.0" })]),
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+
+        const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
+        const structured = result.structuredContent as Record<string, unknown>;
+        const facets = structured.facets as { name: string; installed?: { version: string; updateAvailable: boolean } }[];
+        expect(facets[0].installed).toEqual({ version: "0.1.0", updateAvailable: false });
+        expect("installed" in facets[1]).toBe(false);
 
         await client.close();
     });

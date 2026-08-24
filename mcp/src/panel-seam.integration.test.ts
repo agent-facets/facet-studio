@@ -210,7 +210,12 @@ describe("panel envelope seam", () => {
                 const text = extractResult(textResult);
 
                 expect(ui.structuredContent.kind).toBe("gallery-summary");
-                assertNoDescription(JSON.stringify(ui.structuredContent));
+                const facets = ui.structuredContent.facets as { name: string; version: string; description: string }[];
+                expect(Array.isArray(facets)).toBe(true);
+                expect(facets.length).toBeGreaterThan(0);
+                expect(typeof facets[0]?.name).toBe("string");
+                expect(typeof facets[0]?.version).toBe("string");
+                expect(facets[0]?.description).toBeTruthy();
                 expect(ui.meta).toBeDefined();
                 expect((ui.meta?.[PANEL_PAYLOAD_KEY] as { payload?: unknown })?.payload).toBeDefined();
                 expect(ui.content).toContain("panel");

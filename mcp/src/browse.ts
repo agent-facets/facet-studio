@@ -131,6 +131,27 @@ export function toCounts(counts: Record<string, number> | undefined): GalleryCou
     return out;
 }
 
+/** Renders a facet's asset counts as one compact line, e.g. `"1 Skill, 1 Command"`. */
+export function countLine(counts: GalleryCount[]): string {
+    return counts.map(count => count.label).join(", ");
+}
+
+/**
+ * Truncates text to at most `max` characters, cutting at a word boundary and
+ * adding `…` — but only when something actually got cut. A description that
+ * already fits comes back untouched.
+ */
+export function clip(text: string, max: number): string {
+    if (text.length <= max) {
+        return text;
+    }
+    const budget = max - 1; // leave room for the ellipsis so the result never exceeds `max`
+    const cut = text.slice(0, budget);
+    const lastSpace = cut.lastIndexOf(" ");
+    const trimmed = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+    return `${trimmed}…`;
+}
+
 /** Normalizes one registry summary into what the panel draws. */
 export function toGalleryFacet(summary: z.infer<typeof FacetSummary>): GalleryFacet {
     return {
@@ -152,10 +173,17 @@ export function toText(data: GalleryData): string {
     }
     const lines = data.results.map(facet => {
         const version = facet.version === "" ? "" : `@${facet.version}`;
-        const counts = facet.counts.map(count => count.label).join(", ");
+        const counts = countLine(facet.counts);
         const by = facet.publisher === "" ? "" : ` · by ${facet.publisher}`;
+        const marker =
+            facet.installed === undefined
+                ? ""
+                : facet.installed.updateAvailable
+                  ? ` · update available: ${facet.installed.version} → ${facet.version}`
+                  : ` · installed ${facet.installed.version}`;
         const parts = [`${facet.name}${version}${by}`, facet.description];
-        return counts === "" ? `- ${parts.join(" — ")}` : `- ${parts.join(" — ")} (${counts})`;
+        const base = counts === "" ? `- ${parts.join(" — ")}` : `- ${parts.join(" — ")} (${counts})`;
+        return `${base}${marker}`;
     });
     const count = `${data.results.length} facet${data.results.length === 1 ? "" : "s"}`;
     const typeClause = data.type !== undefined ? ` carrying ${data.type} assets` : "";
@@ -165,7 +193,9 @@ export function toText(data: GalleryData): string {
             : data.fallback === true
               ? `Nothing matched ${data.query}, so here is everything published${typeClause} — ${count}:`
               : `${count}${typeClause} matching ${data.query}:`;
-    return [heading, ...lines].join("\n");
+    const tail =
+        data.nextCursor === undefined ? [] : ["More results available — search again with the cursor to page further."];
+    return [heading, ...lines, ...tail].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -584,15 +614,16 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
     const config = {
         title: "Browse facets",
         description:
-            "Search the Agent Facets registry and show the matching facets — what each one does, " +
-            "who published it, and what is inside it. Use this whenever someone asks what facets " +
-            "exist, what is available, or wants to find a facet to install. Call it AT MOST ONCE " +
-            "per question — every call renders its own panel, and the user can refine the search " +
-            "inside it. The registry search is literal, so translate intent into criteria: put only a real " +
-            "keyword in `query` (\"git\", not \"git related facets\"), set `type` when the user " +
-            "names an asset kind (\"git skills\" → query git, type skill; \"MCP servers\" → type " +
-            "server), and omit `query` for anything thematic — the catalog is small — then judge " +
-            "relevance from the one result. Never issue several browses with different phrasings.",
+            "Search the Agent Facets registry for facets matching a query — what each does, who " +
+            "published it, and what is inside it. Use this whenever someone asks what facets exist " +
+            "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " +
+            "its own panel, and the user can refine the search there. Search is literal: put a real " +
+            "keyword in `query` (\"git\", not \"git related facets\"), set `type` for an asset kind " +
+            "(\"git skills\" → type skill; \"MCP servers\" → type server), and omit `query` for " +
+            "anything thematic. The result already includes each facet's description, asset counts, " +
+            "and install state — answer discovery questions from it directly; do not call " +
+            "facet_detail, facet_contents, or facet_project to embellish the answer (facet_detail is " +
+            "for when the user asks to open ONE facet).",
         inputSchema: browseShape,
         annotations: {
             title: "Browse facets",
@@ -622,7 +653,13 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
                 ...(data.fallback === undefined ? {} : { fallback: data.fallback }),
                 ...(data.nextCursor === undefined ? {} : { nextCursor: data.nextCursor }),
                 total: data.results.length,
-                names: data.results.map(facet => facet.name),
+                facets: data.results.map(facet => ({
+                    name: facet.name,
+                    version: facet.version,
+                    description: clip(facet.description, 120),
+                    counts: countLine(facet.counts),
+                    ...(facet.installed === undefined ? {} : { installed: facet.installed }),
+                })),
             };
             return panelEnvelope(deps.supportsUi, {
                 text: readout(deps.supportsUi, brief, () => toText(data)),
