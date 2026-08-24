@@ -238,7 +238,7 @@ export function parseManifestAssets(manifestJson: string | undefined): ContentAs
 
 const contentsShape = {
     name: z.string().trim().min(1).max(200).describe("Facet name, e.g. `graphite` or `@scope/name`."),
-    version: z.string().trim().min(1).max(64).describe("Which version to read."),
+    version: z.string().trim().min(1).max(64).optional().describe("Which version to read. Defaults to the latest release."),
 };
 
 const contentsSchema = z.object(contentsShape);
@@ -266,17 +266,18 @@ function baseUrl(deps: BrowseDeps): string {
 }
 
 /** Reads one published version and lists what is inside it. */
-export async function contents(args: { name: string; version: string }, deps: BrowseDeps = {}): Promise<ContentsData> {
+export async function contents(args: { name: string; version?: string }, deps: BrowseDeps = {}): Promise<ContentsData> {
     const base = baseUrl(deps);
-    const url = `${base}/v0/facets/${facetPath(args.name)}/${encodeURIComponent(args.version)}`;
-
     const fetchFacets = deps.fetchFacets ?? defaultFetch;
+    const version = args.version ?? (await latestVersionOf(base, args.name, fetchFacets));
+    const url = `${base}/v0/facets/${facetPath(args.name)}/${encodeURIComponent(version)}`;
+
     const parsed = VersionMetadata.parse(await fetchFacets(url));
 
     return {
         kind: "contents",
         facet: parsed.name ?? args.name,
-        version: parsed.version ?? args.version,
+        version: parsed.version ?? version,
         assets: parseManifestAssets(parsed.manifest_json),
     };
 }
@@ -406,10 +407,11 @@ const ContentsResponse = z.object({ files: z.array(ContentsFile).default([]) });
  * contents endpoint returns every text file in the facet and there is no reason
  * to pay for that while drawing a card.
  */
-export async function readme(args: { name: string; version: string }, deps: BrowseDeps = {}): Promise<ReadmeData> {
+export async function readme(args: { name: string; version?: string }, deps: BrowseDeps = {}): Promise<ReadmeData> {
     const base = baseUrl(deps);
     const fetchFacets = deps.fetchFacets ?? defaultFetch;
-    const url = `${base}/v0/facets/${facetPath(args.name)}/${encodeURIComponent(args.version)}/contents`;
+    const version = args.version ?? (await latestVersionOf(base, args.name, fetchFacets));
+    const url = `${base}/v0/facets/${facetPath(args.name)}/${encodeURIComponent(version)}/contents`;
     const parsed = ContentsResponse.parse(await fetchFacets(url));
 
     const found = parsed.files.find(file => file.kind === "text" && ROOT_README.test(file.path));
@@ -417,7 +419,7 @@ export async function readme(args: { name: string; version: string }, deps: Brow
     return {
         kind: "readme",
         facet: args.name,
-        version: args.version,
+        version: version,
         file: found?.path ?? "",
         text: text.slice(0, README_LIMIT),
         truncated: text.length > README_LIMIT,
@@ -650,7 +652,7 @@ function registerDetail(server: Pick<McpServer, "registerTool">, deps: BrowseDep
 
 const readmeShape = {
     name: z.string().trim().min(1).max(200).describe("Facet name, e.g. `graphite` or `@scope/name`."),
-    version: z.string().trim().min(1).max(64).describe("Which version to read."),
+    version: z.string().trim().min(1).max(64).optional().describe("Which version to read. Defaults to the latest release."),
 };
 
 const readmeSchema = z.object(readmeShape);

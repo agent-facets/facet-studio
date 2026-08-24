@@ -181,12 +181,9 @@ const addArgs = z.object({
     directory: directoryField,
 });
 
-// Moving a facet to a new version needs both halves of the coordinate, so unlike
-// `facet_add` neither field is optional here: "update" with no version would just
-// be an add, and "update" with no name would be an install.
 const updateArgs = z.object({
     name: facetNameSchema.describe("Installed facet to move, by registry name."),
-    version: versionSchema.describe("Version or range to move it to."),
+    version: versionSchema.optional().describe("Version or range to move it to. Defaults to the latest release."),
     verbose: verboseField,
     acceptMcp: acceptMcpField,
     directory: directoryField,
@@ -829,7 +826,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
         annotations: MUTATES_ONLINE,
         output: "text",
         directoryMode: "cwd",
-        argv: args => ["add", `${args.name}@${args.version}`, ...projectFlags(args)],
+        argv: args => ["add", args.version === undefined ? args.name : `${args.name}@${args.version}`, ...projectFlags(args)],
     }),
     defineTool({
         name: "facet_install",

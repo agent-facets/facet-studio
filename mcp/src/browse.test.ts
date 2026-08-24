@@ -618,4 +618,129 @@ describe("the envelope splits by who's asking", () => {
 
         await client.close();
     });
+
+    test("facet_contents without version resolves latest via the registry", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        const urls: string[] = [];
+        registerBrowse(server, {
+            fetchFacets: async (url: string) => {
+                urls.push(url);
+                if (url.includes("/latest-version")) {
+                    return { name: "worktrunk", latest: "0.1.0" };
+                }
+                return {
+                    name: "worktrunk",
+                    version: "0.1.0",
+                    manifest_json: JSON.stringify({
+                        skills: { "my-skill": { description: "A skill" } },
+                    }),
+                };
+            },
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        const result = await client.callTool({ name: "facet_contents", arguments: { name: "worktrunk" } });
+        expect(urls.some(u => u.includes("/latest-version"))).toBe(true);
+        expect(urls.some(u => u.includes("/0.1.0"))).toBe(true);
+
+        const contentsData = result.structuredContent as Record<string, unknown>;
+        expect(contentsData.version).toBe("0.1.0");
+        expect((contentsData.assets as unknown[]).length).toBe(1);
+
+        await client.close();
+    });
+
+    test("facet_contents with version does not fetch latest-version", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        const urls: string[] = [];
+        registerBrowse(server, {
+            fetchFacets: async (url: string) => {
+                urls.push(url);
+                if (url.includes("/latest-version")) {
+                    throw new Error("Should not fetch latest-version when version is provided");
+                }
+                return {
+                    name: "worktrunk",
+                    version: "0.0.9",
+                    manifest_json: JSON.stringify({
+                        skills: { "old-skill": { description: "An old skill" } },
+                    }),
+                };
+            },
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        const result = await client.callTool({ name: "facet_contents", arguments: { name: "worktrunk", version: "0.0.9" } });
+        expect(urls.some(u => u.includes("/latest-version"))).toBe(false);
+        expect(urls.some(u => u.includes("/0.0.9"))).toBe(true);
+
+        const contentsData = result.structuredContent as Record<string, unknown>;
+        expect(contentsData.version).toBe("0.0.9");
+
+        await client.close();
+    });
+
+    test("facet_readme without version resolves latest via the registry", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        const urls: string[] = [];
+        registerBrowse(server, {
+            fetchFacets: async (url: string) => {
+                urls.push(url);
+                if (url.includes("/latest-version")) {
+                    return { name: "worktrunk", latest: "0.1.0" };
+                }
+                return {
+                    files: [{ kind: "text", path: "README.md", content: "# Worktrunk" }],
+                };
+            },
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        const result = await client.callTool({ name: "facet_readme", arguments: { name: "worktrunk" } });
+        expect(urls.some(u => u.includes("/latest-version"))).toBe(true);
+        expect(urls.some(u => u.includes("/0.1.0"))).toBe(true);
+
+        const readmeData = result.structuredContent as Record<string, unknown>;
+        expect(readmeData.version).toBe("0.1.0");
+
+        await client.close();
+    });
+
+    test("facet_readme with version does not fetch latest-version", async () => {
+        const server = new McpServer({ name: "test", version: "0" });
+        const urls: string[] = [];
+        registerBrowse(server, {
+            fetchFacets: async (url: string) => {
+                urls.push(url);
+                if (url.includes("/latest-version")) {
+                    throw new Error("Should not fetch latest-version when version is provided");
+                }
+                return {
+                    files: [{ kind: "text", path: "README.md", content: "# Old version" }],
+                };
+            },
+        });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+        const result = await client.callTool({ name: "facet_readme", arguments: { name: "worktrunk", version: "0.0.9" } });
+        expect(urls.some(u => u.includes("/latest-version"))).toBe(false);
+        expect(urls.some(u => u.includes("/0.0.9"))).toBe(true);
+
+        const readmeData = result.structuredContent as Record<string, unknown>;
+        expect(readmeData.version).toBe("0.0.9");
+
+        await client.close();
+    });
 });

@@ -473,6 +473,17 @@ describe("argv construction", () => {
         ]);
     });
 
+    test("facet_update without version omits the @version suffix, letting the CLI resolve latest", async () => {
+        const root = scratch();
+        expect((await argvFor("facet_update", { name: "my-facet" }, root)).argv).toEqual(["add", "my-facet"]);
+        expect((await argvFor("facet_update", { name: "@scope/thing", verbose: true, acceptMcp: true }, root)).argv).toEqual([
+            "add",
+            "@scope/thing",
+            "--verbose",
+            "--accept-mcp",
+        ]);
+    });
+
     test("facet_install restores the project from its lockfile", async () => {
         const root = scratch();
         expect((await argvFor("facet_install", {}, root)).argv).toEqual(["install"]);
@@ -527,15 +538,6 @@ describe("hostile calls never reach the CLI", () => {
             }
         });
     }
-
-    test("facet_update refuses a move with no version to move to", async () => {
-        const harness = await connect();
-        try {
-            await expectSchemaRefusal(harness, "facet_update", { name: "my-facet" });
-        } finally {
-            await harness.close();
-        }
-    });
 
     test("facet_modify refuses a flag-shaped asset name", async () => {
         const harness = await connect();
