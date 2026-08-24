@@ -375,7 +375,6 @@ export class ConsoleController {
             registry: {
                 ...this.state.registry,
                 results: [...this.state.registry.results, ...newFacets],
-                nextCursor: data.nextCursor,
             },
             gallery: { ...this.state.gallery, loadingMore: false, nextCursor: data.nextCursor },
         });

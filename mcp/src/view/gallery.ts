@@ -312,9 +312,9 @@ export function renderGallery(
     }
     fragment.appendChild(list);
 
-    if (pageCount > 1 || data.nextCursor !== undefined) {
+    if (pageCount > 1 || state.nextCursor !== undefined) {
         fragment.appendChild(
-            pager(doc, page, pageCount, shown.length, data.nextCursor !== undefined, state.loadingMore, actions),
+            pager(doc, page, pageCount, shown.length, state.nextCursor !== undefined, state.loadingMore, actions),
         );
     }
     return fragment;

@@ -1046,13 +1046,11 @@ describe("the registry screen", () => {
     });
 
     test("new search resets accumulated rows and cursor", async () => {
-        const browseCount = { calls: 0 };
         const mount = root();
         const controller = consoleOn(
             mount,
             stubPorts({
                 browse: async (query, limit, cursor) => {
-                    browseCount.calls++;
                     if (cursor === undefined) {
                         return {
                             query,
@@ -1067,8 +1065,18 @@ describe("the registry screen", () => {
         controller.start("registry");
         await Bun.sleep(0);
 
+        // Initial search returns first-page-facet with nextCursor
         expect(text(mount)).toContain("first-page-facet");
         expect(text(mount)).not.toContain("second-page-facet");
+
+        // Click Load more to accumulate results
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
+        buttonsLabelled(mount, "Load more")[0]?.click();
+        await Bun.sleep(0);
+
+        // Load more appended second-page-facet without dropping first-page-facet
+        expect(text(mount)).toContain("first-page-facet");
+        expect(text(mount)).toContain("second-page-facet");
 
         // Simulate new search
         const box = fieldWithId(mount, "registry-search");
@@ -1076,13 +1084,12 @@ describe("the registry screen", () => {
         buttonsLabelled(mount, "Search")[0]?.click();
         await Bun.sleep(0);
 
-        // Old results are gone, new search results shown
+        // New search reset accumulated rows, shows only new results
         expect(text(mount)).toContain("first-page-facet");
+        expect(text(mount)).not.toContain("second-page-facet");
+
         // Load more button should exist for new results
         expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
-
-        // Load more button is initially not loading
-        expect(buttonsLabelled(mount, "Loading…")).toHaveLength(0);
     });
 
     test("load-more shows loading state and handles errors by restoring the button", async () => {
