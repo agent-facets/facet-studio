@@ -258,6 +258,76 @@ describe("the request", () => {
         expect(data.results.map(f => f.name)).toEqual(["agent-facet"]);
         expect(data.type).toBe("agent");
     });
+
+    test("cursor input appears in the fetched URL", async () => {
+        const asked: string[] = [];
+        const cursor = "eyJxIjoiZ2l0In0";
+        await browse(
+            { query: "git", cursor },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    return { facets: [{ name: "git-tool" }] };
+                },
+            },
+        );
+        expect(asked[0]).toContain(`cursor=${encodeURIComponent(cursor)}`);
+    });
+
+    test("an empty cursor is rejected by validation", async () => {
+        const error = await browse({ query: "git", cursor: "" }, { fetchFacets: async () => ({ facets: [] }) }).catch(e => e);
+        expect(error).toBeDefined();
+    });
+
+    test("a response with next_cursor yields payload.nextCursor", async () => {
+        const cursor = "nextpage123";
+        const data = await browse(
+            { query: "git" },
+            {
+                fetchFacets: async () => ({
+                    facets: [{ name: "git-tool" }],
+                    next_cursor: cursor,
+                }),
+            },
+        );
+        expect(data.nextCursor).toBe(cursor);
+    });
+
+    test("a response without next_cursor yields no nextCursor key at all", async () => {
+        const data = await browse(
+            { query: "git" },
+            {
+                fetchFacets: async () => ({
+                    facets: [{ name: "git-tool" }],
+                }),
+            },
+        );
+        expect("nextCursor" in data).toBe(false);
+    });
+
+    test("zero-hit fallback drops the cursor", async () => {
+        const asked: string[] = [];
+        const cursor = "oldcursor";
+        const data = await browse(
+            { query: "impossible phrase", cursor },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    // First call: query with cursor returns nothing
+                    if (url.includes("q=")) return { facets: [] };
+                    // Second call: fallback (no cursor sent) returns everything
+                    return { facets: [{ name: "result" }], next_cursor: "fallback_cursor" };
+                },
+            },
+        );
+        expect(asked).toHaveLength(2);
+        // First call should have cursor
+        expect(asked[0]).toContain(`cursor=${encodeURIComponent(cursor)}`);
+        // Second call (fallback) should not have cursor
+        expect(asked[1]).not.toContain("cursor=");
+        // Fallback results should not include nextCursor
+        expect("nextCursor" in data).toBe(false);
+    });
 });
 
 // ---------------------------------------------------------------------------

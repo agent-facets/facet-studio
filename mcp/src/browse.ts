@@ -33,7 +33,10 @@ const FacetSummary = z.object({
     visibility: z.string().optional(),
 });
 
-const SearchResponse = z.object({ facets: z.array(FacetSummary).default([]) });
+const SearchResponse = z.object({
+    facets: z.array(FacetSummary).default([]),
+    next_cursor: z.string().optional(),
+});
 
 /** The asset-count keys the registry uses, mapped to the panel's singular names. */
 const COUNT_KEYS: Record<string, string> = {
@@ -75,6 +78,8 @@ export interface GalleryData {
     fallback?: boolean;
     /** Asset type to filter by, if set. One of skill, agent, command, or server. */
     type?: string;
+    /** Opaque page token for fetching the next page of results. Omitted when no further page exists. */
+    nextCursor?: string;
     results: GalleryFacet[];
 }
 
@@ -444,12 +449,19 @@ const browseShape = {
         .describe(
             "Only facets carrying at least one asset of this type. Set it whenever the user names a kind — skills, agents, commands, MCP servers.",
         ),
+    cursor: z
+        .string()
+        .trim()
+        .min(1)
+        .max(600)
+        .optional()
+        .describe("Opaque page token from a previous result's nextCursor. Only valid with the same query and type."),
 };
 
 const browseSchema = z.object(browseShape);
 
 /** Fetches and normalizes a page of registry results. */
-export async function browse(args: { query?: string; limit?: number; type?: string }, deps: BrowseDeps = {}): Promise<GalleryData> {
+export async function browse(args: { query?: string; limit?: number; type?: string; cursor?: string }, deps: BrowseDeps = {}): Promise<GalleryData> {
     const env = deps.env ?? process.env;
     const base = stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
     const query = args.query?.trim() ?? "";
@@ -460,6 +472,9 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
         url.searchParams.set("q", query);
     }
     url.searchParams.set("sort", query === "" ? "recent" : "relevance");
+    if (args.cursor !== undefined) {
+        url.searchParams.set("cursor", args.cursor);
+    }
 
     const fetchFacets = deps.fetchFacets ?? defaultFetch;
     let parsed = SearchResponse.parse(await fetchFacets(url.toString()));
@@ -488,7 +503,8 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
         kind: "gallery",
         query,
         fallback,
-        type: args.type,
+        ...(args.type === undefined ? {} : { type: args.type }),
+        ...(fallback ? {} : (parsed.next_cursor !== undefined ? { nextCursor: parsed.next_cursor } : {})),
         results: results.slice(0, limit),
     };
 }
