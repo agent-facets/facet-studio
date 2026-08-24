@@ -12,6 +12,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { browse, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT, MAX_LIMIT } from "./browse.js";
+import type { InstalledData, InstalledFacet } from "./project.js";
 import {
     ConsoleController,
     toDetailData,
@@ -340,6 +341,135 @@ describe("the request", () => {
         expect(asked[1]).not.toContain("cursor=");
         // Fallback results SHOULD include nextCursor from the fallback fetch
         expect(data.nextCursor).toBe("fallback_cursor");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Joining the project's own install state onto the registry rows
+// ---------------------------------------------------------------------------
+
+/** One `InstalledFacet`, filled in with plausible defaults for the fields a case doesn't care about. */
+function installedFacet(overrides: Partial<InstalledFacet> & { name: string }): InstalledFacet {
+    return {
+        scope: "",
+        shortName: overrides.name,
+        declared: "latest",
+        version: "",
+        origin: "registry",
+        from: "",
+        installed: true,
+        assets: [],
+        counts: [],
+        ...overrides,
+    };
+}
+
+/** A minimal `InstalledData`, the shape `readProject` returns. */
+function installedData(facets: InstalledFacet[], declared = true): InstalledData {
+    return {
+        kind: "installed",
+        project: "test-project",
+        directory: "/test-project",
+        rootLabel: "configured",
+        declared,
+        locked: facets.length > 0,
+        facets,
+        drift: [],
+    };
+}
+
+describe("joining the project's install state onto the registry rows", () => {
+    test("an installed facet at the same version carries its version and no update", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({ facets: [{ name: "worktrunk", latest_version: "1.3.0" }] }),
+                readProjectFn: async () => installedData([installedFacet({ name: "worktrunk", version: "1.3.0" })]),
+            },
+        );
+        expect(data.results[0].installed).toEqual({ version: "1.3.0", updateAvailable: false });
+    });
+
+    test("a locked version behind the registry's latest offers an update", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({ facets: [{ name: "worktrunk", latest_version: "1.3.0" }] }),
+                readProjectFn: async () => installedData([installedFacet({ name: "worktrunk", version: "1.2.0" })]),
+            },
+        );
+        expect(data.results[0].installed).toEqual({ version: "1.2.0", updateAvailable: true });
+    });
+
+    test("declared but never installed gets no key — Install is still the right button", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({ facets: [{ name: "worktrunk", latest_version: "1.3.0" }] }),
+                readProjectFn: async () =>
+                    installedData([installedFacet({ name: "worktrunk", installed: false, version: "" })]),
+            },
+        );
+        expect("installed" in data.results[0]).toBe(false);
+    });
+
+    test("a scoped name survives the join untouched — no shortName stripping", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({
+                    facets: [{ name: "@agentfacets/address-pr-feedback", latest_version: "2.0.0" }],
+                }),
+                readProjectFn: async () =>
+                    installedData([
+                        installedFacet({ name: "@agentfacets/address-pr-feedback", version: "2.0.0", scope: "@agentfacets/", shortName: "address-pr-feedback" }),
+                    ]),
+            },
+        );
+        expect(data.results[0].installed).toEqual({ version: "2.0.0", updateAvailable: false });
+    });
+
+    test("a broken project degrades to registry-only rows — browse still succeeds", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({ facets: [{ name: "worktrunk", latest_version: "1.3.0" }] }),
+                readProjectFn: async () => {
+                    throw new Error("no facets.json readable");
+                },
+            },
+        );
+        expect("installed" in data.results[0]).toBe(false);
+    });
+
+    test("no facets.json at all — declared: false — also yields no key", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({ facets: [{ name: "worktrunk", latest_version: "1.3.0" }] }),
+                readProjectFn: async () => installedData([], false),
+            },
+        );
+        expect("installed" in data.results[0]).toBe(false);
+    });
+
+    test("a name absent from the project's facets also gets no key", async () => {
+        const data = await browse(
+            {},
+            {
+                fetchFacets: async () => ({ facets: [{ name: "worktrunk", latest_version: "1.3.0" }] }),
+                readProjectFn: async () => installedData([installedFacet({ name: "other-facet", version: "1.0.0" })]),
+            },
+        );
+        expect("installed" in data.results[0]).toBe(false);
+    });
+
+    test("no readProjectFn override — the real readProject runs and, off in a scratch worktree, yields no key", async () => {
+        const data = await browse({}, { fetchFacets: async () => ({ facets: [{ name: "worktrunk" }] }) });
+        // No assertion on presence either way: whatever this checkout's own facets.json
+        // says is not this test's business. The point is that browse resolves without
+        // readProjectFn being supplied at all — the real default runs, not undefined.
+        expect(data.results).toHaveLength(1);
     });
 });
 

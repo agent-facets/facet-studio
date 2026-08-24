@@ -16,6 +16,7 @@ import { PANEL_RESOURCE_URI } from "./view/panel.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RegistrationDeps } from "./server.js";
+import { readProject, type InstalledFacet } from "./project.js";
 
 /** Most results one call will return, and the ceiling a caller can ask for. */
 export const DEFAULT_LIMIT = 6;
@@ -68,6 +69,8 @@ export interface GalleryFacet {
     publisher: string;
     published: string;
     counts: GalleryCount[];
+    /** This project's own copy, when it has one. Absent — never null — when it doesn't. */
+    installed?: { version: string; updateAvailable: boolean };
 }
 
 /** The structured payload the panel renders as a gallery. */
@@ -91,6 +94,8 @@ export interface BrowseDeps extends Partial<RegistrationDeps> {
     registryUrl?: string;
     fetchFacets?: FetchFacets;
     env?: Record<string, string | undefined>;
+    /** Reads this project's installed facets. Defaults to the real `readProject`; tests replace it. */
+    readProjectFn?: typeof readProject;
 }
 
 function stripTrailingSlashes(value: string): string {
@@ -460,6 +465,51 @@ const browseShape = {
 
 const browseSchema = z.object(browseShape);
 
+/**
+ * This project's installed facets, keyed by their full registry name.
+ *
+ * `undefined` means "say nothing about install state" — either the project
+ * couldn't be read, or it has no `facets.json` at all. A scratch directory
+ * must never claim install state, so both cases fall back the same way: the
+ * registry rows come back unjoined rather than guessing.
+ */
+async function loadInstalled(deps: BrowseDeps): Promise<Map<string, InstalledFacet> | undefined> {
+    const readProjectFn = deps.readProjectFn ?? readProject;
+    try {
+        const data = await readProjectFn(undefined, deps);
+        if (!data.declared) {
+            return undefined;
+        }
+        return new Map(data.facets.map(facet => [facet.name, facet]));
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Adds this project's install state to one row, when it has any to add.
+ *
+ * The match is on the full `@scope/name` — a scoped and an unscoped facet
+ * that happen to share a short name are different facets, and stripping the
+ * scope before matching would join them by mistake. A facet the project has
+ * declared but never installed gets no key either: the gallery's own Install
+ * button is already the right affordance for that, and an install-shaped key
+ * with nothing in it would just be confusing.
+ */
+function withInstalled(facet: GalleryFacet, installed: Map<string, InstalledFacet> | undefined): GalleryFacet {
+    const entry = installed?.get(facet.name);
+    if (entry === undefined || !entry.installed) {
+        return facet;
+    }
+    return {
+        ...facet,
+        installed: {
+            version: entry.version,
+            updateAvailable: entry.version !== "" && facet.version !== entry.version,
+        },
+    };
+}
+
 /** Fetches and normalizes a page of registry results. */
 export async function browse(args: { query?: string; limit?: number; type?: string; cursor?: string }, deps: BrowseDeps = {}): Promise<GalleryData> {
     const env = deps.env ?? process.env;
@@ -493,8 +543,12 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
         fallback = true;
     }
 
+    // Resolved once per call, before mapping any row — a broken or absent
+    // project degrades to registry-only results rather than half-joining them.
+    const installed = await loadInstalled(deps);
+
     // Map to GalleryFacet first, then apply type filter if set
-    let results = parsed.facets.map(toGalleryFacet);
+    let results = parsed.facets.map(toGalleryFacet).map(facet => withInstalled(facet, installed));
     if (args.type !== undefined) {
         results = results.filter(facet => facet.counts.some(count => count.type === args.type));
     }
