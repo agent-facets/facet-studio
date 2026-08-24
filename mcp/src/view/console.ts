@@ -411,8 +411,12 @@ export class ConsoleController {
     private galleryActions(): GalleryActions {
         return {
             // A new filter starts from the first page — page numbers only mean
-            // anything against the list they were counted on.
-            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type, page: 0, nextCursor: undefined } }),
+            // anything against the list they were counted on. The cursor stays:
+            // filtering by asset type happens here in the panel, over rows that
+            // are already in hand, so the search the server ran is unchanged and
+            // its next page is still the right one to ask for. Only a new search
+            // makes a cursor worthless.
+            filter: type => this.set({ gallery: { ...this.state.gallery, filter: type, page: 0 } }),
             open: facet => void this.openDetail(facet.name, facet.version),
             install: facet => void this.installFromGallery(facet),
             update: (facet, version) => void this.updateFromGallery(facet, version),
@@ -426,13 +430,35 @@ export class ConsoleController {
     }
 
     private async openDetail(name: string, version?: string): Promise<void> {
-        this.set({ screen: "detail", loading: "detail", detailState: emptyDetailState() });
+        this.set({ screen: "detail", loading: "detail", detailState: this.detailStateFor(name) });
         const data = await this.ports.detail(name, version).catch(() => undefined);
         if (data === undefined) {
             this.set({ loading: null, screen: "registry" });
             return;
         }
         this.set({ loading: null, detail: data });
+    }
+
+    /**
+     * What the install button on a freshly opened detail screen starts as.
+     *
+     * The gallery already worked this out for the card the user just clicked,
+     * and the answer doesn't change on the way to the detail screen — without
+     * this, a row reading "Installed" would offer a fresh Install one click
+     * later. Same order of precedence the cards use: an install run in this
+     * session is the freshest thing there is, then the server's snapshot of the
+     * project, and a facet the current results don't list starts from idle.
+     */
+    private detailStateFor(name: string): DetailState {
+        const session = this.state.gallery.installs[name];
+        if (session !== undefined) {
+            return { ...emptyDetailState(), install: session };
+        }
+        const row = this.state.registry?.results.find(facet => facet.name === name);
+        if (row?.installed === undefined) {
+            return emptyDetailState();
+        }
+        return { ...emptyDetailState(), install: "installed" };
     }
 
     private async installFromGallery(facet: GalleryFacet): Promise<void> {

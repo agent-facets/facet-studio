@@ -16,6 +16,7 @@ import path from "node:path";
 import { registerProject } from "../project.js";
 import { registerAuthoring } from "../authoring.js";
 import { ConsoleController, toPanelData, type ModifyArgs, type PanelElement } from "./panel.js";
+import { toDetailData } from "./detail.js";
 import { toInstalledData } from "./installed.js";
 import { toAuthorData } from "./author.js";
 import {
@@ -1143,5 +1144,138 @@ describe("the registry screen", () => {
         await Bun.sleep(0);
         expect(text(mount)).toContain("facet-2");
         expect(text(mount)).not.toContain("Network error");
+    });
+
+    // -----------------------------------------------------------------------
+    // Filtering, and what it is allowed to throw away
+    // -----------------------------------------------------------------------
+
+    test("a filter chip keeps the cursor, so Load more survives it — only a new search clears it", async () => {
+        const calls: [string, number | undefined, string | undefined][] = [];
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                browse: async (query, limit, cursor) => {
+                    calls.push([query, limit, cursor]);
+                    if (query === "gitwork") {
+                        return { query, results: [facetNamed("fresh-search-facet")] };
+                    }
+                    if (cursor === undefined) {
+                        return { query, results: [facetNamed("page-one-facet")], nextCursor: "page2cursor" };
+                    }
+                    return { query, results: [facetNamed("page-two-facet")] };
+                },
+            }),
+        );
+        controller.start("registry");
+        await Bun.sleep(0);
+
+        expect(text(mount)).toContain("page-one-facet");
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
+
+        // The type filter runs here in the panel, over rows already fetched, so
+        // the server's search is untouched and its cursor is still good.
+        buttonsLabelled(mount, "Skills")[0]?.click();
+        expect(controller.snapshot().gallery.filter).toBe("skill");
+        expect(controller.snapshot().gallery.nextCursor).toBe("page2cursor");
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
+
+        // And it still works: the next page is asked for with that same cursor.
+        buttonsLabelled(mount, "Load more")[0]?.click();
+        await Bun.sleep(0);
+        expect(calls).toEqual([
+            ["", 24, undefined],
+            ["", 24, "page2cursor"],
+        ]);
+        expect(text(mount)).toContain("page-two-facet");
+
+        // The other half of the rule: a new search mints a new result set, so
+        // the old rows and the old cursor both go.
+        fieldWithId(mount, "registry-search")?.type("gitwork");
+        buttonsLabelled(mount, "Search")[0]?.click();
+        await Bun.sleep(0);
+        expect(text(mount)).toContain("fresh-search-facet");
+        expect(text(mount)).not.toContain("page-one-facet");
+        expect(text(mount)).not.toContain("page-two-facet");
+        expect(controller.snapshot().gallery.nextCursor).toBeUndefined();
+        expect(buttonsLabelled(mount, "Load more")).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // Opening a card's detail screen
+    // -----------------------------------------------------------------------
+
+    test("a row the project already has opens as Installed, not as a fresh Install", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({ detail: async name => toDetailData({ ...DETAIL, facet: name }) }),
+        );
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                results: [facetNamed("graphite", undefined, { version: "1.0.0", updateAvailable: false })],
+            },
+            "facet_browse",
+        );
+
+        buttonsLabelled(mount, "graphite")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(controller.snapshot().screen).toBe("detail");
+        expect(controller.snapshot().detailState.install).toBe("installed");
+        expect(cardButtonsLabelled(mount, "Installed")).toHaveLength(1);
+        expect(buttonsLabelled(mount, "Install")).toHaveLength(0);
+    });
+
+    test("session state wins on the detail screen too: a failed install opens as failed", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({
+                add: async () => ({ ok: false, message: "registry unreachable" }),
+                detail: async name => toDetailData({ ...DETAIL, facet: name }),
+            }),
+        );
+        deliver(
+            controller,
+            {
+                kind: "gallery",
+                query: "",
+                results: [facetNamed("graphite", undefined, { version: "0.1.0", updateAvailable: true })],
+            },
+            "facet_browse",
+        );
+
+        // The update fails, which is fresher news than the server's snapshot.
+        buttonsStarting(mount, "Update to")[0]?.click();
+        await Bun.sleep(0);
+        expect(controller.snapshot().gallery.installs.graphite).toBe("failed");
+
+        buttonsLabelled(mount, "graphite")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(controller.snapshot().detailState.install).toBe("failed");
+        expect(buttonsLabelled(mount, "Retry")).toHaveLength(1);
+        expect(cardButtonsLabelled(mount, "Installed")).toHaveLength(0);
+    });
+
+    test("a row the project does not have opens with a plain Install button", async () => {
+        const mount = root();
+        const controller = consoleOn(
+            mount,
+            stubPorts({ detail: async name => toDetailData({ ...DETAIL, facet: name }) }),
+        );
+        deliver(controller, { kind: "gallery", query: "", results: [facetNamed("openspec")] }, "facet_browse");
+
+        buttonsLabelled(mount, "openspec")[0]?.click();
+        await Bun.sleep(0);
+
+        expect(controller.snapshot().screen).toBe("detail");
+        expect(controller.snapshot().detailState.install).toBe("idle");
+        expect(buttonsLabelled(mount, "Install")).toHaveLength(1);
     });
 });
