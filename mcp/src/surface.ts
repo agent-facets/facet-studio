@@ -13,9 +13,11 @@
 // doesn't need the model to see full descriptions in its tool result either —
 // that's just as much a recitation risk as the text was. So on those hosts the
 // full payload moves to `_meta`, where the panel reads it straight off the tool
-// result, and structuredContent shrinks to a summary: names and counts, nothing
-// a model could turn into prose. Text-only hosts are untouched — they get the
-// full payload in structuredContent, same as before this existed.
+// result, and structuredContent shrinks to a summary: bounded per-facet rows
+// carrying name, version, a clipped description, asset counts, and install state.
+// Recitation is held back by the `panelShows` text instruction rather than by
+// starving the payload. Text-only hosts are untouched — they get the full payload
+// in structuredContent, same as before this existed.
 
 import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 

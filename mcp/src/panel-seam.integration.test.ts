@@ -174,7 +174,7 @@ async function connect(
             registerBrowse(target, {
                 ...deps,
                 fetchFacets: fetchFacetsOverride ?? makeFetchFacets(),
-                readProjectFn: installedFacets !== undefined ? (makeMockReadProjectFn(installedFacets) as any) : undefined,
+                readProjectFn: installedFacets !== undefined ? makeMockReadProjectFn(installedFacets) : undefined,
             });
             registerProject(target, { ...deps, projectRoot });
             registerAuthoring(target, { ...deps, projectRoot });
@@ -210,7 +210,7 @@ function extractResult(result: unknown): { content: string; structuredContent: R
 
 /** Creates a mock readProject function with a stub-installed facet. */
 function makeMockReadProjectFn(installedFacets: Record<string, string>) {
-    return async (_dir: string | undefined): Promise<{ declared: boolean; facets: Array<{ name: string; installed: boolean; version: string }> }> => {
+    return async (_dir: string | undefined, _deps: unknown): Promise<{ declared: boolean; facets: Array<{ name: string; installed: boolean; version: string }> }> => {
         return {
             declared: true,
             facets: Object.entries(installedFacets).map(([name, version]) => ({

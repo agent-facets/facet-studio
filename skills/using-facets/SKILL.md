@@ -81,7 +81,7 @@ When the facet-studio MCP server is connected, prefer its `facet_*` tools over r
 
 ### Discovery routing
 
-Questions about what facets exist, what they do, or which to install route to one `facet_browse` call—never a browse-then-detail chain, and never the CLI's `facet search` when the MCP server is connected. The browse result already answers the question.
+Questions about what facets exist, what they do, or which to install route to one `facet_browse` call—never a browse-then-detail chain, and never the CLI's `facet search` when the MCP server is connected. The browse result already answers the question. Tools like `facet_contents`, `facet_readme`, and `facet_update` accept an optional `version` argument that defaults to the latest release.
 
 ## Headless environments
 
