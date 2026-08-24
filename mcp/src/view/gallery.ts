@@ -76,6 +76,8 @@ export interface GalleryState {
     nextCursor?: string;
     /** Whether a load-more fetch is in progress. */
     loadingMore: boolean;
+    /** Why the last load-more fetch failed, if it did. Cleared on the next attempt or success. */
+    loadMoreError?: string;
 }
 
 export function emptyGalleryState(): GalleryState {
@@ -216,8 +218,10 @@ function pager(
     total: number,
     hasMore: boolean,
     loadingMore: boolean,
+    loadMoreError: string | undefined,
     actions: GalleryActions,
-): PanelElement {
+): PanelFragment {
+    const fragment = doc.createDocumentFragment();
     const row = element(doc, "div", "pager");
 
     const prev = button(doc, "filter pager-btn", "‹ Prev", () => actions.page(page - 1));
@@ -243,7 +247,14 @@ function pager(
         }
         row.appendChild(more);
     }
-    return row;
+    fragment.appendChild(row);
+
+    // Same idiom as a card's install failure: the reason sits right under the
+    // control that failed, and the control itself is what you press to retry.
+    if (loadMoreError !== undefined) {
+        fragment.appendChild(element(doc, "p", "facet-error pager-error", loadMoreError));
+    }
+    return fragment;
 }
 
 /** Draws the browse gallery: one card per facet. */
@@ -314,7 +325,16 @@ export function renderGallery(
 
     if (pageCount > 1 || state.nextCursor !== undefined) {
         fragment.appendChild(
-            pager(doc, page, pageCount, shown.length, state.nextCursor !== undefined, state.loadingMore, actions),
+            pager(
+                doc,
+                page,
+                pageCount,
+                shown.length,
+                state.nextCursor !== undefined,
+                state.loadingMore,
+                state.loadMoreError,
+                actions,
+            ),
         );
     }
     return fragment;

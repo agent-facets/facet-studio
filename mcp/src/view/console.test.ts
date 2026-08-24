@@ -1030,10 +1030,14 @@ describe("the registry screen", () => {
         loadMoreBtn[0]?.click();
         await Bun.sleep(0);
 
-        // After loading, page shows all 6 facets (4 original + 2 new, facet-03 deduplicated)
+        // After loading, page shows all 6 facets (4 original + 2 new, facet-03 deduplicated) —
+        // asserted by the card count, not just substring presence, so a broken dedupe filter
+        // (which would render facet-03 twice) actually fails this.
         expect(text(mount)).toContain("facet-00");
         expect(text(mount)).toContain("facet-04");
         expect(text(mount)).toContain("facet-05");
+        expect(buttonsLabelled(mount, "facet-03")).toHaveLength(1);
+        expect(text(mount)).toContain("6 facets");
 
         // Load more button disappears because nextCursor is undefined
         expect(buttonsLabelled(mount, "Load more")).toHaveLength(0);
@@ -1121,9 +1125,23 @@ describe("the registry screen", () => {
         buttonsLabelled(mount, "Load more")[0]?.click();
         await Bun.sleep(0);
 
-        // After error, button is back and not disabled
+        // After error, button is back and not disabled, and the failure is shown —
+        // same message-beside-the-control idiom as an install/update failure.
         expect(buttonsLabelled(mount, "Load more")).toHaveLength(1);
         const btn = buttonsLabelled(mount, "Load more")[0];
         expect(btn?.attrs.get("disabled")).not.toBe("disabled");
+        expect(text(mount)).toContain("Network error");
+
+        // Facet-1 from the first page is still there — a failed load-more doesn't
+        // wipe out what was already fetched.
+        expect(text(mount)).toContain("facet-1");
+        expect(text(mount)).not.toContain("facet-2");
+
+        // Clicking again (the retry) succeeds and clears the error.
+        shouldFail = false;
+        buttonsLabelled(mount, "Load more")[0]?.click();
+        await Bun.sleep(0);
+        expect(text(mount)).toContain("facet-2");
+        expect(text(mount)).not.toContain("Network error");
     });
 });

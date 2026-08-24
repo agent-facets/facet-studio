@@ -356,13 +356,20 @@ export class ConsoleController {
         if (this.state.registry === undefined || this.state.gallery.nextCursor === undefined) {
             return;
         }
-        this.set({ gallery: { ...this.state.gallery, loadingMore: true } });
-        const data = await this.ports
-            .browse(this.state.registry.query, BROWSE_LIMIT, this.state.gallery.nextCursor)
-            .catch(() => undefined);
+        this.set({ gallery: { ...this.state.gallery, loadingMore: true, loadMoreError: undefined } });
+        let data: GalleryData | undefined;
+        let message: string | undefined;
+        try {
+            data = await this.ports.browse(this.state.registry.query, BROWSE_LIMIT, this.state.gallery.nextCursor);
+        } catch (error) {
+            message = reasonFor(error);
+        }
         if (data === undefined) {
-            // On error, clear the loading state but keep the cursor so user can retry.
-            this.set({ gallery: { ...this.state.gallery, loadingMore: false } });
+            // On error, restore the button and keep the cursor so the same click
+            // retries — the reason sits alongside it, same as an install failure.
+            this.set({
+                gallery: { ...this.state.gallery, loadingMore: false, loadMoreError: message ?? "Loading more did not complete." },
+            });
             return;
         }
 
@@ -376,7 +383,7 @@ export class ConsoleController {
                 ...this.state.registry,
                 results: [...this.state.registry.results, ...newFacets],
             },
-            gallery: { ...this.state.gallery, loadingMore: false, nextCursor: data.nextCursor },
+            gallery: { ...this.state.gallery, loadingMore: false, loadMoreError: undefined, nextCursor: data.nextCursor },
         });
     }
 
