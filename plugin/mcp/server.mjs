@@ -31655,7 +31655,7 @@ function isErrorResult(value) {
 // mcp/src/surface.ts
 function panelShows(brief) {
   return `${brief}
-` + "The Facet Studio panel is showing this result — the user can search, open details, and install " + "right in it. Do not restate its contents in prose (no tables, no lists of the results), do not " + "call more facet tools to add context they did not ask for (every extra call stacks another widget), " + "and do not suggest CLI commands for things the panel can do. If the request needs judgment the " + "panel lacks — say, which results actually fit — give it in one or two plain sentences naming only " + "those items. Otherwise reply in one sentence or ask what they want to do next.";
+` + "The Facet Studio panel is showing this result, and the panel IS the answer. The user is already " + "looking at every name, description, and count, and can search, page, open details, and install " + "right there. Write nothing after this. Do not restate any of it — no prose summary, no bullets, " + 'no table, no "here are the ones that fit", no recommendations, no "want me to install one?". ' + "A question about which results fit is answered by the panel too: the user reads the rows and " + "clicks. Do not call more facet tools to add context they did not ask for (every extra call stacks " + "another widget), and do not suggest CLI commands for things the panel can do. Speak only if the " + "user asked for something the panel genuinely cannot show, and then in one short sentence.";
 }
 function readout(supportsUi, brief, full) {
   return supportsUi === true ? panelShows(brief) : full();
@@ -35763,7 +35763,7 @@ async function readme(args, deps = {}) {
   };
 }
 var browseShape = {
-  query: exports_external.string().trim().max(200).optional().describe('One short literal term the user actually said, e.g. "git". Multi-word phrases match nothing. Omit for anything thematic — the full catalog is one page.'),
+  query: exports_external.string().trim().max(200).optional().describe(`The one word the user's question is about, e.g. "what helps with my git workflows" → "git". ` + "Search is literal, so pass a single term — multi-word phrases match nothing. Pass one whenever the " + "user is after a particular kind of thing, even a broad or thematic one; a term that matches nothing " + "falls back to the whole catalog by itself, so there is no cost to trying. Omit it only when the user " + "asks to see everything."),
   limit: exports_external.number().int().min(1).optional().describe(`Most results to return (default ${DEFAULT_LIMIT}, capped at ${MAX_LIMIT}).`),
   type: exports_external.enum(["skill", "agent", "command", "server"]).optional().describe("Only facets carrying at least one asset of this type. Set it whenever the user names a kind — skills, agents, commands, MCP servers."),
   cursor: exports_external.string().trim().min(1).max(600).optional().describe("Opaque page token from a previous result's nextCursor. Only valid with the same query and type.")
@@ -35843,7 +35843,7 @@ async function defaultFetch(url2) {
 function registerBrowse(server, deps = {}) {
   const config2 = {
     title: "Browse facets",
-    description: "Search the Agent Facets registry for facets matching a query — what each does, who " + "published it, and what is inside it. Use this whenever someone asks what facets exist " + "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " + "its own panel, and the user can refine the search there. Search is literal: put a real " + 'keyword in `query` ("git", not "git related facets"), set `type` for an asset kind ' + '("git skills" → type skill; "MCP servers" → type server), and omit `query` for ' + "anything thematic. The result already includes each facet's description, asset counts, " + "and install state — answer discovery questions from it directly; do not call " + "facet_detail, facet_contents, or facet_project to embellish the answer (facet_detail is " + "for when the user asks to open ONE facet).",
+    description: "Search the Agent Facets registry for facets matching a query — what each does, who " + "published it, and what is inside it. Use this whenever someone asks what facets exist " + "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " + "its own panel, and the user can refine the search there. Always take the subject out of " + 'the user\'s own question and pass it as `query`: "what facets help with my git workflows" ' + 'is a search for "git", not a request for the whole catalog. Search is literal, so one ' + 'keyword and never a phrase ("git", not "git related facets"); a keyword that matches ' + "nothing falls back to everything published on its own. Omit `query` only when the user asks " + 'to see everything. Set `type` for an asset kind ("git skills" → type skill; "MCP servers" ' + "→ type server). The result already includes each facet's description, asset counts, and " + "install state — do not call facet_detail, facet_contents, or facet_project to embellish it " + "(facet_detail is for when the user asks to open ONE facet).",
     inputSchema: browseShape,
     annotations: {
       title: "Browse facets",

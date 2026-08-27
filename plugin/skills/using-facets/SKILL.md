@@ -86,7 +86,7 @@ When the facet-studio MCP server is connected, prefer its `facet_*` tools over r
 
 ### Discovery routing
 
-Questions about what facets exist, what they do, or which to install route to one `facet_browse` call—never a browse-then-detail chain, and never the CLI's `facet search` when the MCP server is connected. The browse result already answers the question. Tools like `facet_contents`, `facet_readme`, and `facet_update` accept an optional `version` argument that defaults to the latest release.
+Questions about what facets exist, what they do, or which to install route to one `facet_browse` call—never a browse-then-detail chain, and never the CLI's `facet search` when the MCP server is connected. The browse result already answers the question. Pass the subject of the question as `query`: "what facets help with my git workflows" is a search for `git`, not a request for the whole catalog. Search is literal, so use one keyword rather than a phrase—a keyword that matches nothing falls back to everything published, so a broad question still gets an answer. Tools like `facet_contents`, `facet_readme`, and `facet_update` accept an optional `version` argument that defaults to the latest release.
 
 ## Headless environments
 
