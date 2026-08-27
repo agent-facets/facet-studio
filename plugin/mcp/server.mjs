@@ -35523,6 +35523,7 @@ function registerProject(server, deps = {}) {
 // mcp/src/browse.ts
 var DEFAULT_LIMIT = 6;
 var MAX_LIMIT = 24;
+var MAX_TERMS = 2;
 var FacetSummary = exports_external.object({
   name: exports_external.string(),
   latest_version: exports_external.string().optional(),
@@ -35763,7 +35764,7 @@ async function readme(args, deps = {}) {
   };
 }
 var browseShape = {
-  query: exports_external.string().trim().max(200).optional().describe(`The one word the user's question is about, e.g. "what helps with my git workflows" → "git". ` + "Search is literal, so pass a single term — multi-word phrases match nothing. Pass one whenever the " + "user is after a particular kind of thing, even a broad or thematic one; a term that matches nothing " + "falls back to the whole catalog by itself, so there is no cost to trying. Omit it only when the user " + "asks to see everything."),
+  query: exports_external.string().trim().max(200).optional().describe('One or two keywords describing what the user is after, space separated — "what helps with my git ' + 'workflows" → "git worktree". Each keyword is searched on its own and the results are merged, so ' + "a second keyword only ever adds matches. Keep them to real subject words a facet's name or " + 'description would use; drop filler like "facets", "help", or "workflow". Pass keywords ' + "whenever the user is after a particular kind of thing, even a broad or thematic one; keywords that " + "match nothing fall back to the whole catalog by themselves, so there is no cost to trying. Omit " + "this only when the user asks to see everything."),
   limit: exports_external.number().int().min(1).optional().describe(`Most results to return (default ${DEFAULT_LIMIT}, capped at ${MAX_LIMIT}).`),
   type: exports_external.enum(["skill", "agent", "command", "server"]).optional().describe("Only facets carrying at least one asset of this type. Set it whenever the user names a kind — skills, agents, commands, MCP servers."),
   cursor: exports_external.string().trim().min(1).max(600).optional().describe("Opaque page token from a previous result's nextCursor. Only valid with the same query and type.")
@@ -35794,30 +35795,70 @@ function withInstalled(facet, installed) {
     }
   };
 }
+function searchTerms(query) {
+  const seen = new Set;
+  const terms = [];
+  for (const word of query.split(/\s+/)) {
+    if (word === "" || seen.has(word.toLowerCase())) {
+      continue;
+    }
+    seen.add(word.toLowerCase());
+    terms.push(word);
+    if (terms.length === MAX_TERMS) {
+      break;
+    }
+  }
+  return terms;
+}
+function mergeByName(pages) {
+  const seen = new Set;
+  const merged = [];
+  for (const facet of pages.flat()) {
+    if (seen.has(facet.name)) {
+      continue;
+    }
+    seen.add(facet.name);
+    merged.push(facet);
+  }
+  return merged;
+}
 async function browse(args, deps = {}) {
   const env = deps.env ?? process.env;
   const base = stripTrailingSlashes2(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
   const query = args.query?.trim() ?? "";
+  const terms = searchTerms(query);
   const limit = Math.min(args.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
-  const url2 = new URL(`${base}/v0/facets`);
-  if (query !== "") {
-    url2.searchParams.set("q", query);
-  }
-  url2.searchParams.set("sort", query === "" ? "recent" : "relevance");
-  if (args.cursor !== undefined) {
-    url2.searchParams.set("cursor", args.cursor);
-  }
   const fetchFacets = deps.fetchFacets ?? defaultFetch;
-  let parsed = SearchResponse.parse(await fetchFacets(url2.toString()));
+  const search = (term, cursor) => {
+    const url2 = new URL(`${base}/v0/facets`);
+    if (term !== undefined) {
+      url2.searchParams.set("q", term);
+    }
+    url2.searchParams.set("sort", term === undefined ? "recent" : "relevance");
+    if (cursor !== undefined) {
+      url2.searchParams.set("cursor", cursor);
+    }
+    return url2.toString();
+  };
+  let facets;
+  let nextCursor;
+  if (terms.length > 1) {
+    const pages = await Promise.all(terms.map(async (term) => SearchResponse.parse(await fetchFacets(search(term)))));
+    facets = mergeByName(pages.map((page2) => page2.facets));
+  } else {
+    const parsed = SearchResponse.parse(await fetchFacets(search(terms[0], args.cursor)));
+    facets = parsed.facets;
+    nextCursor = parsed.next_cursor;
+  }
   let fallback = false;
-  if (query !== "" && parsed.facets.length === 0) {
-    const everything = new URL(`${base}/v0/facets`);
-    everything.searchParams.set("sort", "recent");
-    parsed = SearchResponse.parse(await fetchFacets(everything.toString()));
+  if (terms.length > 0 && facets.length === 0) {
+    const everything = SearchResponse.parse(await fetchFacets(search(undefined)));
+    facets = everything.facets;
+    nextCursor = everything.next_cursor;
     fallback = true;
   }
   const installed = await loadInstalled(deps);
-  let results = parsed.facets.map(toGalleryFacet2).map((facet) => withInstalled(facet, installed));
+  let results = facets.map(toGalleryFacet2).map((facet) => withInstalled(facet, installed));
   if (args.type !== undefined) {
     results = results.filter((facet) => facet.counts.some((count) => count.type === args.type));
   }
@@ -35826,7 +35867,8 @@ async function browse(args, deps = {}) {
     query,
     fallback,
     type: args.type,
-    ...parsed.next_cursor !== undefined ? { nextCursor: parsed.next_cursor } : {},
+    ...terms.length > 1 ? { terms } : {},
+    ...nextCursor !== undefined ? { nextCursor } : {},
     results: results.slice(0, limit)
   };
 }
@@ -35843,7 +35885,7 @@ async function defaultFetch(url2) {
 function registerBrowse(server, deps = {}) {
   const config2 = {
     title: "Browse facets",
-    description: "Search the Agent Facets registry for facets matching a query — what each does, who " + "published it, and what is inside it. Use this whenever someone asks what facets exist " + "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " + "its own panel, and the user can refine the search there. Always take the subject out of " + 'the user\'s own question and pass it as `query`: "what facets help with my git workflows" ' + 'is a search for "git", not a request for the whole catalog. Search is literal, so one ' + 'keyword and never a phrase ("git", not "git related facets"); a keyword that matches ' + "nothing falls back to everything published on its own. Omit `query` only when the user asks " + 'to see everything. Set `type` for an asset kind ("git skills" → type skill; "MCP servers" ' + "→ type server). The result already includes each facet's description, asset counts, and " + "install state — do not call facet_detail, facet_contents, or facet_project to embellish it " + "(facet_detail is for when the user asks to open ONE facet).",
+    description: "Search the Agent Facets registry for facets matching a query — what each does, who " + "published it, and what is inside it. Use this whenever someone asks what facets exist " + "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " + "its own panel, and the user can refine the search there. Always work out what the user is " + 'actually after and pass it as `query` — one or two keywords, space separated. "What facets ' + 'help with my git workflows" is a search for "git worktree", not a request for the whole ' + "catalog. Each keyword is searched separately and the results merged, so pick the one or two " + "subject words a facet's name or description would plausibly use and leave out filler like " + '"facets" or "help"; keywords that match nothing fall back to everything published on ' + "their own, so a guess costs nothing. Omit `query` only when the user asks to see everything. " + 'Set `type` for an asset kind ("git skills" → type skill; "MCP servers" → type server). ' + "The result already includes each facet's description, asset counts, and install state — do " + "not call facet_detail, facet_contents, or facet_project to embellish it (facet_detail is for " + "when the user asks to open ONE facet).",
     inputSchema: browseShape,
     annotations: {
       title: "Browse facets",
