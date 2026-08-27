@@ -22,6 +22,9 @@ import { readProject, type InstalledFacet } from "./project.js";
 export const DEFAULT_LIMIT = 6;
 export const MAX_LIMIT = 24;
 
+/** How many keywords out of a query actually get searched. */
+export const MAX_TERMS = 2;
+
 /** What the registry returns per facet. Unknown fields are ignored. */
 const FacetSummary = z.object({
     name: z.string(),
@@ -81,6 +84,8 @@ export interface GalleryData {
     fallback?: boolean;
     /** Asset type to filter by, if set. One of skill, agent, command, or server. */
     type?: string;
+    /** The keywords that were searched, when more than one ran. Absent for a single-keyword search. */
+    terms?: string[];
     /** Opaque page token for fetching the next page of results. Omitted when no further page exists. */
     nextCursor?: string;
     results: GalleryFacet[];
@@ -473,11 +478,13 @@ const browseShape = {
         .max(200)
         .optional()
         .describe(
-            "The one word the user's question is about, e.g. \"what helps with my git workflows\" → \"git\". " +
-                "Search is literal, so pass a single term — multi-word phrases match nothing. Pass one whenever the " +
-                "user is after a particular kind of thing, even a broad or thematic one; a term that matches nothing " +
-                "falls back to the whole catalog by itself, so there is no cost to trying. Omit it only when the user " +
-                "asks to see everything.",
+            "One or two keywords describing what the user is after, space separated — \"what helps with my git " +
+                "workflows\" → \"git worktree\". Each keyword is searched on its own and the results are merged, so " +
+                "a second keyword only ever adds matches. Keep them to real subject words a facet's name or " +
+                "description would use; drop filler like \"facets\", \"help\", or \"workflow\". Pass keywords " +
+                "whenever the user is after a particular kind of thing, even a broad or thematic one; keywords that " +
+                "match nothing fall back to the whole catalog by themselves, so there is no cost to trying. Omit " +
+                "this only when the user asks to see everything.",
         ),
     // No upper bound in the schema: a host model that asks for 50 should get
     // the capped page, not a validation error it can do nothing about.
@@ -545,35 +552,99 @@ function withInstalled(facet: GalleryFacet, installed: Map<string, InstalledFace
 }
 
 /** Fetches and normalizes a page of registry results. */
+/**
+ * The keywords a search actually runs, in the order they were written.
+ *
+ * The registry matches `q` as one string, so the only way to honour more than
+ * one keyword is to ask for each separately. Two is the ceiling: it covers the
+ * "one or two sensible words" a caller pulls out of a question, and keeps a
+ * single search to a bounded number of requests. Anything past the second word
+ * is dropped rather than searched, which is why the terms that ran come back in
+ * the result.
+ */
+export function searchTerms(query: string): string[] {
+    const seen = new Set<string>();
+    const terms: string[] = [];
+    for (const word of query.split(/\s+/)) {
+        if (word === "" || seen.has(word.toLowerCase())) {
+            continue;
+        }
+        seen.add(word.toLowerCase());
+        terms.push(word);
+        if (terms.length === MAX_TERMS) {
+            break;
+        }
+    }
+    return terms;
+}
+
+/**
+ * One list from several, keeping each facet once and keeping the earlier
+ * keyword's hits first — the first word a caller wrote is the one they meant
+ * most, so its matches lead.
+ */
+function mergeByName<T extends { name: string }>(pages: T[][]): T[] {
+    const seen = new Set<string>();
+    const merged: T[] = [];
+    for (const facet of pages.flat()) {
+        if (seen.has(facet.name)) {
+            continue;
+        }
+        seen.add(facet.name);
+        merged.push(facet);
+    }
+    return merged;
+}
+
 export async function browse(args: { query?: string; limit?: number; type?: string; cursor?: string }, deps: BrowseDeps = {}): Promise<GalleryData> {
     const env = deps.env ?? process.env;
     const base = stripTrailingSlashes(deps.registryUrl ?? env.FACET_REGISTRY_URL ?? DEFAULT_REGISTRY_URL);
     const query = args.query?.trim() ?? "";
+    const terms = searchTerms(query);
     const limit = Math.min(args.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
-
-    const url = new URL(`${base}/v0/facets`);
-    if (query !== "") {
-        url.searchParams.set("q", query);
-    }
-    url.searchParams.set("sort", query === "" ? "recent" : "relevance");
-    if (args.cursor !== undefined) {
-        url.searchParams.set("cursor", args.cursor);
-    }
-
     const fetchFacets = deps.fetchFacets ?? defaultFetch;
-    let parsed = SearchResponse.parse(await fetchFacets(url.toString()));
 
-    // The registry's search is literal, and a phrase like "dev workflow
-    // management" matches nothing even when half the catalog is about exactly
-    // that. An empty answer here just makes the caller ask again without the
-    // query — a second call, a second widget — so the fallback happens in this
-    // one call instead: everything published, marked as such, with the query
-    // kept so the screen can say what didn't match.
+    const search = (term: string | undefined, cursor?: string): string => {
+        const url = new URL(`${base}/v0/facets`);
+        if (term !== undefined) {
+            url.searchParams.set("q", term);
+        }
+        url.searchParams.set("sort", term === undefined ? "recent" : "relevance");
+        if (cursor !== undefined) {
+            url.searchParams.set("cursor", cursor);
+        }
+        return url.toString();
+    };
+
+    // One keyword is one request, and it can page. Two keywords are two
+    // requests merged here, because the registry matches `q` as a whole and
+    // "git worktree" hits nothing even though each word alone hits plenty.
+    // A merged page has no single cursor to continue from, so a two-keyword
+    // search is one page — the user narrows to a single word to page further.
+    let facets: z.infer<typeof SearchResponse>["facets"];
+    let nextCursor: string | undefined;
+    if (terms.length > 1) {
+        const pages = await Promise.all(terms.map(async term => SearchResponse.parse(await fetchFacets(search(term)))));
+        facets = mergeByName(pages.map(page => page.facets));
+    } else {
+        const parsed = SearchResponse.parse(await fetchFacets(search(terms[0], args.cursor)));
+        facets = parsed.facets;
+        nextCursor = parsed.next_cursor;
+    }
+
+    // Even split into words, a search can come back empty — the registry only
+    // matches names and descriptions, so a real subject it doesn't happen to
+    // spell finds nothing. An empty answer here just makes the caller ask
+    // again without the query — a second call, a second widget — so the
+    // fallback happens in this one call instead: everything published, marked
+    // as such, with the query kept so the screen can say what didn't match.
     let fallback = false;
-    if (query !== "" && parsed.facets.length === 0) {
-        const everything = new URL(`${base}/v0/facets`);
-        everything.searchParams.set("sort", "recent");
-        parsed = SearchResponse.parse(await fetchFacets(everything.toString()));
+    if (terms.length > 0 && facets.length === 0) {
+        const everything = SearchResponse.parse(await fetchFacets(search(undefined)));
+        facets = everything.facets;
+        // The caller's cursor belonged to the query that just missed. This page
+        // is the whole catalog, and it pages on its own token.
+        nextCursor = everything.next_cursor;
         fallback = true;
     }
 
@@ -582,7 +653,7 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
     const installed = await loadInstalled(deps);
 
     // Map to GalleryFacet first, then apply type filter if set
-    let results = parsed.facets.map(toGalleryFacet).map(facet => withInstalled(facet, installed));
+    let results = facets.map(toGalleryFacet).map(facet => withInstalled(facet, installed));
     if (args.type !== undefined) {
         results = results.filter(facet => facet.counts.some(count => count.type === args.type));
     }
@@ -592,7 +663,10 @@ export async function browse(args: { query?: string; limit?: number; type?: stri
         query,
         fallback,
         type: args.type,
-        ...(parsed.next_cursor !== undefined ? { nextCursor: parsed.next_cursor } : {}),
+        // Only when more than one ran: a single-keyword search says everything
+        // it needs to in `query`, and repeating it here would be noise.
+        ...(terms.length > 1 ? { terms } : {}),
+        ...(nextCursor !== undefined ? { nextCursor } : {}),
         results: results.slice(0, limit),
     };
 }
@@ -621,15 +695,17 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
             "Search the Agent Facets registry for facets matching a query — what each does, who " +
             "published it, and what is inside it. Use this whenever someone asks what facets exist " +
             "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " +
-            "its own panel, and the user can refine the search there. Always take the subject out of " +
-            "the user's own question and pass it as `query`: \"what facets help with my git workflows\" " +
-            "is a search for \"git\", not a request for the whole catalog. Search is literal, so one " +
-            "keyword and never a phrase (\"git\", not \"git related facets\"); a keyword that matches " +
-            "nothing falls back to everything published on its own. Omit `query` only when the user asks " +
-            "to see everything. Set `type` for an asset kind (\"git skills\" → type skill; \"MCP servers\" " +
-            "→ type server). The result already includes each facet's description, asset counts, and " +
-            "install state — do not call facet_detail, facet_contents, or facet_project to embellish it " +
-            "(facet_detail is for when the user asks to open ONE facet).",
+            "its own panel, and the user can refine the search there. Always work out what the user is " +
+            "actually after and pass it as `query` — one or two keywords, space separated. \"What facets " +
+            "help with my git workflows\" is a search for \"git worktree\", not a request for the whole " +
+            "catalog. Each keyword is searched separately and the results merged, so pick the one or two " +
+            "subject words a facet's name or description would plausibly use and leave out filler like " +
+            "\"facets\" or \"help\"; keywords that match nothing fall back to everything published on " +
+            "their own, so a guess costs nothing. Omit `query` only when the user asks to see everything. " +
+            "Set `type` for an asset kind (\"git skills\" → type skill; \"MCP servers\" → type server). " +
+            "The result already includes each facet's description, asset counts, and install state — do " +
+            "not call facet_detail, facet_contents, or facet_project to embellish it (facet_detail is for " +
+            "when the user asks to open ONE facet).",
         inputSchema: browseShape,
         annotations: {
             title: "Browse facets",

@@ -11,7 +11,20 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { browse, clip, countLine, registerBrowse, shortDate, toCounts, toGalleryFacet, toText, DEFAULT_LIMIT, MAX_LIMIT } from "./browse.js";
+import {
+    browse,
+    clip,
+    countLine,
+    registerBrowse,
+    searchTerms,
+    shortDate,
+    toCounts,
+    toGalleryFacet,
+    toText,
+    DEFAULT_LIMIT,
+    MAX_LIMIT,
+    MAX_TERMS,
+} from "./browse.js";
 import type { InstalledData, InstalledFacet } from "./project.js";
 import {
     ConsoleController,
@@ -237,7 +250,11 @@ describe("the request", () => {
             },
         );
 
-        expect(asked).toHaveLength(2);
+        // Two keywords searched separately, then the fallback when neither hit.
+        // "management" is past the two-term ceiling and never gets asked for.
+        expect(asked).toHaveLength(3);
+        expect(asked.filter(url => url.includes("q=")).length).toBe(2);
+        expect(asked.some(url => url.includes("q=management"))).toBe(false);
         expect(data.fallback).toBe(true);
         expect(data.query).toBe("dev workflow management");
         expect(data.results.map(facet => facet.name)).toEqual(["worktrunk", "graphite"]);
@@ -328,7 +345,7 @@ describe("the request", () => {
                 },
             },
         );
-        expect(asked).toHaveLength(2);
+        expect(asked).toHaveLength(3);
         expect(data.fallback).toBe(true);
         expect(data.results.map(f => f.name)).toEqual(["agent-facet"]);
         expect(data.type).toBe("agent");
@@ -397,7 +414,7 @@ describe("the request", () => {
         const asked: string[] = [];
         const cursor = "oldcursor";
         const data = await browse(
-            { query: "impossible phrase", cursor },
+            { query: "impossible", cursor },
             {
                 fetchFacets: async (url: string) => {
                     asked.push(url);
@@ -415,6 +432,123 @@ describe("the request", () => {
         expect(asked[1]).not.toContain("cursor=");
         // Fallback results SHOULD include nextCursor from the fallback fetch
         expect(data.nextCursor).toBe("fallback_cursor");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Two keywords, searched separately
+//
+// The registry matches `q` whole, so "git worktree" finds nothing while each
+// word alone finds plenty. Splitting is the only way a caller's two sensible
+// keywords both count.
+// ---------------------------------------------------------------------------
+
+describe("searching one or two keywords", () => {
+    test("splits a query into the terms that will be searched, keeping order and dropping repeats", () => {
+        expect(searchTerms("git")).toEqual(["git"]);
+        expect(searchTerms("git worktree")).toEqual(["git", "worktree"]);
+        expect(searchTerms("  git   worktree  ")).toEqual(["git", "worktree"]);
+        expect(searchTerms("git GIT worktree")).toEqual(["git", "worktree"]);
+        expect(searchTerms("")).toEqual([]);
+    });
+
+    test("stops at two terms, so one search is never more than two searches", () => {
+        expect(searchTerms("git worktree branch stack")).toEqual(["git", "worktree"]);
+        expect(MAX_TERMS).toBe(2);
+    });
+
+    test("two keywords become two requests, unioned, the first keyword's hits leading", async () => {
+        const asked: string[] = [];
+        const data = await browse(
+            { query: "git worktree" },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    if (url.includes("q=git")) return { facets: [{ name: "worktrunk" }, { name: "graphite" }] };
+                    return { facets: [{ name: "worktrunk" }, { name: "wt-helper" }] };
+                },
+            },
+        );
+
+        expect(asked).toHaveLength(2);
+        expect(asked[0]).toContain("q=git");
+        expect(asked[1]).toContain("q=worktree");
+        // worktrunk matched both and is listed once, under the first keyword.
+        expect(data.results.map(facet => facet.name)).toEqual(["worktrunk", "graphite", "wt-helper"]);
+        expect(data.fallback).toBe(false);
+    });
+
+    test("a phrase that finds nothing whole still finds what its words find", async () => {
+        // The exact shape that used to dump the whole catalog: the caller's
+        // words are real, only their combination isn't.
+        const data = await browse(
+            { query: "git workflows" },
+            {
+                fetchFacets: async (url: string) => {
+                    if (url.includes("q=git")) return { facets: [{ name: "worktrunk" }] };
+                    if (url.includes("q=workflows")) return { facets: [] };
+                    return { facets: [{ name: "everything-else" }] };
+                },
+            },
+        );
+
+        expect(data.fallback).toBe(false);
+        expect(data.results.map(facet => facet.name)).toEqual(["worktrunk"]);
+    });
+
+    test("the fallback waits until every keyword has missed", async () => {
+        const asked: string[] = [];
+        const data = await browse(
+            { query: "nothing here" },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    return url.includes("q=") ? { facets: [] } : { facets: [{ name: "worktrunk" }] };
+                },
+            },
+        );
+
+        expect(asked).toHaveLength(3);
+        expect(data.fallback).toBe(true);
+        expect(data.results.map(facet => facet.name)).toEqual(["worktrunk"]);
+    });
+
+    test("the terms that ran are reported when more than one did, so a dropped third word isn't silent", async () => {
+        const two = await browse({ query: "git worktree stack" }, { fetchFacets: async () => ({ facets: [{ name: "worktrunk" }] }) });
+        expect(two.terms).toEqual(["git", "worktree"]);
+
+        // One keyword says everything it needs to in `query`.
+        const one = await browse({ query: "git" }, { fetchFacets: async () => ({ facets: [{ name: "worktrunk" }] }) });
+        expect(one.terms).toBeUndefined();
+    });
+
+    test("a merged page carries no cursor, because neither keyword's cursor continues it", async () => {
+        const data = await browse(
+            { query: "git worktree" },
+            { fetchFacets: async () => ({ facets: [{ name: "worktrunk" }], next_cursor: "page2" }) },
+        );
+        expect(data.nextCursor).toBeUndefined();
+
+        // A single keyword pages exactly as it always did.
+        const single = await browse(
+            { query: "git" },
+            { fetchFacets: async () => ({ facets: [{ name: "worktrunk" }], next_cursor: "page2" }) },
+        );
+        expect(single.nextCursor).toBe("page2");
+    });
+
+    test("a cursor is ignored once a second keyword is in play, never sent against the wrong query", async () => {
+        const asked: string[] = [];
+        await browse(
+            { query: "git worktree", cursor: "from-a-single-word-search" },
+            {
+                fetchFacets: async (url: string) => {
+                    asked.push(url);
+                    return { facets: [{ name: "worktrunk" }] };
+                },
+            },
+        );
+        expect(asked.some(url => url.includes("cursor="))).toBe(false);
     });
 });
 
@@ -1150,7 +1284,18 @@ describe("the discovery instructions the model reads", () => {
     });
 
     test("a keyword that finds nothing is advertised as safe, so a broad question is never a reason to drop it", async () => {
-        expect((await browseDescription()).toLowerCase()).toContain("matches nothing falls back");
+        expect((await browseDescription()).toLowerCase()).toContain("fall back to everything published");
+    });
+
+    test("the model is told it may pass two keywords, and that a second one only widens the answer", async () => {
+        const text = (await browseDescription()).toLowerCase();
+
+        expect(text).toContain("one or two keywords");
+        expect(text).toContain("searched separately");
+        expect(text).toContain("only ever adds matches");
+        // The old rule, now false: two keywords are supported, so telling the
+        // model to send exactly one would leave half its judgment unused.
+        expect(text).not.toContain("never a phrase");
     });
 
     test("on a panel host the model is told to write nothing after the result", () => {
