@@ -51,7 +51,7 @@ async function connect(capabilities: ClientCapabilities, deps: StudioServerDeps 
 }
 
 describe("createServer", () => {
-    test("introduces itself as facet-studio 0.5.0", async () => {
+    test("introduces itself as facet-studio 0.6.0", async () => {
         const harness = await connect(UI_CAPABLE);
         try {
             expect(harness.client.getServerVersion()).toMatchObject({
@@ -59,7 +59,7 @@ describe("createServer", () => {
                 version: SERVER_VERSION,
             });
             expect(SERVER_NAME).toBe("facet-studio");
-            expect(SERVER_VERSION).toBe("0.5.0");
+            expect(SERVER_VERSION).toBe("0.6.0");
         } finally {
             await harness.close();
         }
