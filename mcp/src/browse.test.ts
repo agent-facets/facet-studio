@@ -13,7 +13,6 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
     browse,
-    clip,
     countLine,
     registerBrowse,
     searchTerms,
@@ -156,31 +155,6 @@ describe("the text fallback", () => {
 
         const withoutCursor = await browse({ query: "coding" }, { fetchFacets: async () => REGISTRY_RESPONSE });
         expect(toText(withoutCursor)).not.toContain("More results available");
-    });
-});
-
-describe("clip", () => {
-    test("a 150-char sentence clips at a word boundary, ≤120 chars, ending …", () => {
-        const long =
-            "This is a sentence about a facet that runs long enough to definitely exceed the summary row's strict one hundred twenty character budget for clipping.";
-        expect(long.length).toBe(150);
-        const clipped = clip(long, 120);
-        expect(clipped.length).toBeLessThanOrEqual(120);
-        expect(clipped.endsWith("…")).toBe(true);
-        // Cut at a word boundary: what's left (minus the ellipsis) is a clean prefix of the source.
-        expect(long.startsWith(clipped.slice(0, -1))).toBe(true);
-        expect(clipped.slice(0, -1).endsWith(" ")).toBe(false);
-    });
-
-    test("an exactly-120-char description passes through untouched", () => {
-        const exact =
-            "Exactly one hundred and twenty characters long, this fixture description must survive clip() completely untouched today.";
-        expect(exact.length).toBe(120);
-        expect(clip(exact, 120)).toBe(exact);
-    });
-
-    test("a short description passes through untouched", () => {
-        expect(clip("Short.", 120)).toBe("Short.");
     });
 });
 
@@ -927,7 +901,7 @@ describe("browse end to end, tool result straight into the console", () => {
 // ---------------------------------------------------------------------------
 
 describe("the envelope splits by who's asking", () => {
-    test("(a) apps host: facet_browse's structuredContent is a bounded row summary with enough per facet to answer without another call, the real gallery rides in _meta, and the panel's own reader still reconstructs it", async () => {
+    test("(a) apps host: facet_browse's structuredContent is names and a count with nothing to recite, the real gallery rides in _meta, and the panel's own reader still reconstructs it", async () => {
         const server = new McpServer({ name: "test", version: "0" });
         registerBrowse(server, { supportsUi: true, fetchFacets: async () => REGISTRY_RESPONSE });
 
@@ -938,22 +912,13 @@ describe("the envelope splits by who's asking", () => {
         const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
         const structured = result.structuredContent as Record<string, unknown>;
         expect(structured.kind).toBe("gallery-summary");
-        expect(structured.names).toBeUndefined();
-        const facets = structured.facets as { name: string; version: string; description: string; counts: string }[];
-        expect(facets).toEqual([
-            {
-                name: "worktrunk",
-                version: "0.1.0",
-                description: "Worktrunk-first git-worktree guidance for coding agents.",
-                counts: "1 Skill, 1 Command",
-            },
-            {
-                name: "graphite",
-                version: "0.1.0",
-                description: "Graphite-first version-control guidance for coding agents.",
-                counts: "1 Skill",
-            },
-        ]);
+        expect(structured.total).toBe(2);
+        expect(structured.names).toEqual(["worktrunk", "graphite"]);
+        // No per-facet rows at all. The descriptions are in the payload the
+        // panel reads, and nowhere the model could read them back out.
+        expect(structured.facets).toBeUndefined();
+        expect(JSON.stringify(structured).toLowerCase()).not.toContain("description");
+        expect(JSON.stringify(structured)).not.toContain("Worktrunk-first");
 
         const meta = result._meta as Record<string, unknown>;
         const payload = (meta[PANEL_PAYLOAD_KEY] as Record<string, unknown>).payload as Record<string, unknown>;
@@ -966,7 +931,7 @@ describe("the envelope splits by who's asking", () => {
         await client.close();
     });
 
-    test("an installed facet's row carries the installed object; an uninstalled one carries no installed key at all", async () => {
+    test("install state stays in the payload the panel draws, never in the summary the model reads", async () => {
         const server = new McpServer({ name: "test", version: "0" });
         registerBrowse(server, {
             supportsUi: true,
@@ -980,9 +945,13 @@ describe("the envelope splits by who's asking", () => {
 
         const result = (await client.callTool({ name: "facet_browse", arguments: { query: "coding" } })) as Record<string, unknown>;
         const structured = result.structuredContent as Record<string, unknown>;
-        const facets = structured.facets as { name: string; installed?: { version: string; updateAvailable: boolean } }[];
-        expect(facets[0].installed).toEqual({ version: "0.1.0", updateAvailable: false });
-        expect("installed" in facets[1]).toBe(false);
+        expect(structured.names).toEqual(["worktrunk", "graphite"]);
+        expect(JSON.stringify(structured)).not.toContain("installed");
+
+        // The panel still gets it, joined row by row, off the same result.
+        const gallery = toGalleryData(result);
+        expect(gallery?.results[0]?.installed).toEqual({ version: "0.1.0", updateAvailable: false });
+        expect(gallery?.results[1]?.installed).toBeUndefined();
 
         await client.close();
     });

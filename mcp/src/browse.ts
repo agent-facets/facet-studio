@@ -141,22 +141,6 @@ export function countLine(counts: GalleryCount[]): string {
     return counts.map(count => count.label).join(", ");
 }
 
-/**
- * Truncates text to at most `max` characters, cutting at a word boundary and
- * adding `…` — but only when something actually got cut. A description that
- * already fits comes back untouched.
- */
-export function clip(text: string, max: number): string {
-    if (text.length <= max) {
-        return text;
-    }
-    const budget = max - 1; // leave room for the ellipsis so the result never exceeds `max`
-    const cut = text.slice(0, budget);
-    const lastSpace = cut.lastIndexOf(" ");
-    const trimmed = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
-    return `${trimmed}…`;
-}
-
 /** Normalizes one registry summary into what the panel draws. */
 export function toGalleryFacet(summary: z.infer<typeof FacetSummary>): GalleryFacet {
     return {
@@ -728,20 +712,21 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
                     : data.fallback === true
                       ? `Nothing matched "${data.query}" exactly, so the panel's Registry screen is showing everything published — ${count}${typeInfo}. Do not browse again.`
                       : `${count}${typeInfo} matching "${data.query}", in the panel's Registry screen.`;
+            // Names and counts, and deliberately nothing to read aloud. A host
+            // with a panel has already shown the user every description; the
+            // model carrying a second copy only ever ends up reciting it under
+            // the panel, which is the one thing the panel is there to stop.
+            // The full rows are in `_meta` for the panel, and a text-only host
+            // gets all of it in structuredContent instead.
             const summary = {
                 kind: "gallery-summary",
                 query: data.query,
                 ...(data.type === undefined ? {} : { type: data.type }),
                 ...(data.fallback === undefined ? {} : { fallback: data.fallback }),
+                ...(data.terms === undefined ? {} : { terms: data.terms }),
                 ...(data.nextCursor === undefined ? {} : { nextCursor: data.nextCursor }),
                 total: data.results.length,
-                facets: data.results.map(facet => ({
-                    name: facet.name,
-                    version: facet.version,
-                    description: clip(facet.description, 120),
-                    counts: countLine(facet.counts),
-                    ...(facet.installed === undefined ? {} : { installed: facet.installed }),
-                })),
+                names: data.results.map(facet => facet.name),
             };
             return panelEnvelope(deps.supportsUi, {
                 text: readout(deps.supportsUi, brief, () => toText(data)),

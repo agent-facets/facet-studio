@@ -260,12 +260,14 @@ describe("panel envelope seam", () => {
                 const text = extractResult(textResult);
 
                 expect(ui.structuredContent.kind).toBe("gallery-summary");
-                const facets = ui.structuredContent.facets as { name: string; version: string; description: string }[];
-                expect(Array.isArray(facets)).toBe(true);
-                expect(facets.length).toBeGreaterThan(0);
-                expect(typeof facets[0]?.name).toBe("string");
-                expect(typeof facets[0]?.version).toBe("string");
-                expect(facets[0]?.description).toBeTruthy();
+                const names = ui.structuredContent.names as string[];
+                expect(Array.isArray(names)).toBe(true);
+                expect(names.length).toBeGreaterThan(0);
+                expect(typeof names[0]).toBe("string");
+                // The summary is the one surface a recitation could come from,
+                // so it holds nothing worth reciting.
+                expect(ui.structuredContent.facets).toBeUndefined();
+                assertNoDescription(JSON.stringify(ui.structuredContent));
                 expect(ui.meta).toBeDefined();
                 expect((ui.meta?.[PANEL_PAYLOAD_KEY] as { payload?: unknown })?.payload).toBeDefined();
                 expect(ui.content).toContain("panel");
@@ -310,29 +312,15 @@ describe("panel envelope seam", () => {
                 const result = await harness.client.callTool({ name: "facet_browse", arguments: { query: "test" } });
                 const ui = extractResult(result);
 
-                // UI summary shape: gallery-summary with facets rows, nextCursor, no "names" key
+                // The summary carries what the model needs to act — which facets
+                // came back, and whether a page follows — and no install state,
+                // no descriptions, nothing to write out under the panel.
                 expect(ui.structuredContent.kind).toBe("gallery-summary");
                 expect(ui.structuredContent.nextCursor).toBe("page2_token");
-                const summaryFacets = ui.structuredContent.facets as Array<{ name: string; version: string; description: string; counts: string; installed?: unknown }>;
-                expect(Array.isArray(summaryFacets)).toBe(true);
-                expect(summaryFacets.length).toBeGreaterThan(0);
-
-                // Check first facet (skill-facet, installed at older version)
-                const skillFacet = summaryFacets.find(f => f.name === "skill-facet");
-                expect(skillFacet).toBeDefined();
-                expect(skillFacet?.installed).toBeDefined();
-                expect((skillFacet?.installed as { version?: string; updateAvailable?: boolean })?.version).toBe("0.9.5");
-                expect((skillFacet?.installed as { version?: string; updateAvailable?: boolean })?.updateAvailable).toBe(true);
-
-                // Check second facet (agent-facet, not installed)
-                const agentFacet = summaryFacets.find(f => f.name === "agent-facet");
-                expect(agentFacet).toBeDefined();
-                expect(agentFacet?.installed).toBeUndefined();
-
-                // No "names" key in summary facets
-                for (const facet of summaryFacets) {
-                    expect((facet as Record<string, unknown>).names).toBeUndefined();
-                }
+                expect(ui.structuredContent.names).toEqual(["skill-facet", "agent-facet"]);
+                expect(ui.structuredContent.facets).toBeUndefined();
+                assertNoDescription(JSON.stringify(ui.structuredContent));
+                expect(JSON.stringify(ui.structuredContent)).not.toContain("0.9.5");
 
                 // Payload (in _meta) has the real gallery data
                 expect(ui.meta).toBeDefined();

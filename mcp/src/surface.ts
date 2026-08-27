@@ -11,13 +11,14 @@
 //
 // The same split applies to structuredContent itself. A host with a panel
 // doesn't need the model to see full descriptions in its tool result either —
-// that's just as much a recitation risk as the text was. So on those hosts the
-// full payload moves to `_meta`, where the panel reads it straight off the tool
-// result, and structuredContent shrinks to a summary: bounded per-facet rows
-// carrying name, version, a clipped description, asset counts, and install state.
-// Recitation is held back by the `panelShows` text instruction rather than by
-// starving the payload. Text-only hosts are untouched — they get the full payload
-// in structuredContent, same as before this existed.
+// that's just as much a recitation risk as the text was, and asking it not to
+// recite what is sitting in front of it turned out to lose to any skill that
+// told it to write something. So on those hosts the full payload moves to
+// `_meta`, where the panel reads it straight off the tool result, and
+// structuredContent shrinks to a summary: names, counts, and the handful of
+// facts a follow-up call needs, with nothing in it that reads as prose.
+// Text-only hosts are untouched — they get the full payload in
+// structuredContent, same as before this existed.
 
 import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 
@@ -52,12 +53,11 @@ export function readout(supportsUi: boolean | undefined, brief: string, full: ()
  *
  * On a text-only host `structuredContent` carries the full `payload`, byte-
  * identical to what every browse-family tool returned before this existed. On
- * a host with a panel, `structuredContent` shrinks to `summary` — bounded
- * per-facet rows, enough to answer the question that was asked without a
- * second call, and no more — and the full `payload` moves to `_meta`, where
- * the panel's own readers pick it up. What keeps the model from reciting the
- * summary back is the instruction in `panelShows`, not a starved payload.
- * `summary.kind` has to be the "-summary"
+ * a host with a panel, `structuredContent` shrinks to `summary` — names and
+ * counts, nothing to recite — and the full `payload` moves to `_meta`, where
+ * the panel's own readers pick it up. The instruction in `panelShows` says not
+ * to recite; the starved summary is what makes that easy to obey, because
+ * there is nothing there to write out. `summary.kind` has to be the "-summary"
  * variant of the real kind: a host that strips `_meta` before handing the
  * result to its model must fail to match any reader and fall through, not
  * render an empty gallery because the summary happened to answer to the real

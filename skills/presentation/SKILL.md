@@ -2,6 +2,14 @@
 
 When presenting the result of a facet operation, use this contract for consistent markdown across all hosts.
 
+**First, check whether there is anything to present at all.** Where the host draws
+the Facet Studio panel, a read — browse, detail, readme, project, manifest — is
+answered by the screen, and you write nothing under it: no summary, no result
+card, no list of what came back, no `facet ...` command for something the panel's
+own buttons do. The card format below is for text-only hosts, and for operation
+outcomes that a strip reports rather than a screen. When in doubt about a read on
+a panel host, the answer is silence.
+
 ## Result card format
 
 Each result card opens with a header: `## <operation> — <facet name>`. Follow with a status line using Unicode marks (✓ for success, ✗ for error, ⚠ for warning), then a table summarizing assets. Column headers: Type | Name | Description. Use brand words for types: `skill`, `agent`, `command`, `server`.
