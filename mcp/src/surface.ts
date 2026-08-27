@@ -25,12 +25,14 @@ import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
 export function panelShows(brief: string): string {
     return (
         `${brief}\n` +
-        "The Facet Studio panel is showing this result — the user can search, open details, and install " +
-        "right in it. Do not restate its contents in prose (no tables, no lists of the results), do not " +
-        "call more facet tools to add context they did not ask for (every extra call stacks another widget), " +
-        "and do not suggest CLI commands for things the panel can do. If the request needs judgment the " +
-        "panel lacks — say, which results actually fit — give it in one or two plain sentences naming only " +
-        "those items. Otherwise reply in one sentence or ask what they want to do next."
+        "The Facet Studio panel is showing this result, and the panel IS the answer. The user is already " +
+        "looking at every name, description, and count, and can search, page, open details, and install " +
+        "right there. Write nothing after this. Do not restate any of it — no prose summary, no bullets, " +
+        "no table, no \"here are the ones that fit\", no recommendations, no \"want me to install one?\". " +
+        "A question about which results fit is answered by the panel too: the user reads the rows and " +
+        "clicks. Do not call more facet tools to add context they did not ask for (every extra call stacks " +
+        "another widget), and do not suggest CLI commands for things the panel can do. Speak only if the " +
+        "user asked for something the panel genuinely cannot show, and then in one short sentence."
     );
 }
 

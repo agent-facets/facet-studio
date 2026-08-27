@@ -23,6 +23,7 @@ import {
     type PanelElement,
 } from "./view/panel.js";
 import { PANEL_PAYLOAD_KEY } from "./view/dom.js";
+import { panelShows } from "./surface.js";
 import {
     buttonsLabelled,
     classes,
@@ -1106,5 +1107,60 @@ describe("the envelope splits by who's asking", () => {
         expect(readmeData.version).toBe("0.0.9");
 
         await client.close();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// What the tool tells the model to do. A host's model only searches for what
+// the user asked, and only stays quiet afterwards, because the description and
+// the panel text say so — both have drifted before, so they're pinned here.
+// ---------------------------------------------------------------------------
+
+describe("the discovery instructions the model reads", () => {
+    async function browseDescription(): Promise<string> {
+        const server = new McpServer({ name: "test", version: "0" });
+        registerBrowse(server, { fetchFacets: async () => ({ facets: [] }) });
+
+        const client = new Client({ name: "test-client", version: "0" });
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await Promise.all([client.connect(ct), server.connect(st)]);
+        try {
+            const listed = (await client.listTools()) as {
+                tools: { name: string; description?: string; inputSchema?: Record<string, unknown> }[];
+            };
+            const browseTool = listed.tools.find(tool => tool.name === "facet_browse");
+            const properties = (browseTool?.inputSchema?.properties ?? {}) as Record<string, { description?: string }>;
+            return `${browseTool?.description ?? ""}\n${properties.query?.description ?? ""}`;
+        } finally {
+            await client.close();
+        }
+    }
+
+    test("the model is told to search for what the user asked about, not to drop the query when the question sounds broad", async () => {
+        const text = await browseDescription();
+
+        expect(text.toLowerCase()).toContain("git workflows");
+        // The bug this replaced: "omit `query` for anything thematic" turned
+        // "what helps with my git workflows" into an unfiltered catalog dump.
+        // Asking to see everything is now the only licence to drop the query.
+        for (const omission of text.toLowerCase().matchAll(/omit[^.]*\./g)) {
+            expect(omission[0]).toContain("asks to see everything");
+        }
+        expect(text).toContain("Omit `query` only when the user asks to see everything.");
+    });
+
+    test("a keyword that finds nothing is advertised as safe, so a broad question is never a reason to drop it", async () => {
+        expect((await browseDescription()).toLowerCase()).toContain("matches nothing falls back");
+    });
+
+    test("on a panel host the model is told to write nothing after the result", () => {
+        const text = panelShows("2 facets matching \"git\".");
+
+        expect(text).toContain("Write nothing after this");
+        expect(text).toContain("Do not restate");
+        // The old escape hatch — "if the request needs judgment, name the ones
+        // that fit" — is what produced the bulleted recap under the panel.
+        expect(text.toLowerCase()).not.toContain("one or two plain sentences");
+        expect(text.toLowerCase()).not.toContain("ask what they want to do next");
     });
 });

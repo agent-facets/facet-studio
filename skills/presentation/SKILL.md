@@ -37,7 +37,9 @@ Publishing has no MCP tool. Direct people to `facet publish` or the `/facet-publ
 
 ## Discovery is one call
 
-A question about what facets exist, what they do, or which are worth installing is answered by ONE `facet_browse` call. Do not follow it with `facet_detail`, `facet_contents`, or `facet_project`—the browse result already carries each facet's description, asset counts, and install state. The panel handles pagination itself; row click opens detail and Install/Update act in place. For `facet_contents`, `facet_readme`, and `facet_update`, a `version` argument is optional and defaults to the latest published release when omitted.
+A question about what facets exist, what they do, or which are worth installing is answered by ONE `facet_browse` call, searched for what the user actually asked about. Pull the subject out of their question and pass it as `query`—"what facets help with my git workflows" is a search for `git`. One literal keyword, never a phrase; a keyword that matches nothing falls back to the whole catalog on its own, so a broad question is never a reason to drop the query. Do not follow the call with `facet_detail`, `facet_contents`, or `facet_project`—the browse result already carries each facet's description, asset counts, and install state. The panel handles pagination itself; row click opens detail and Install/Update act in place. For `facet_contents`, `facet_readme`, and `facet_update`, a `version` argument is optional and defaults to the latest published release when omitted.
+
+Where the panel renders, that panel is the whole answer: say nothing after it. No prose summary, no bulleted list of the results, no "here are the ones that fit", no offer to install. The user is already reading the rows and can search, page, open, and install without a sentence from you. Which results fit is a question the panel answers too. Speak only for something the panel cannot show, and then in one short sentence.
 
 ## Host matrix
 

@@ -473,7 +473,11 @@ const browseShape = {
         .max(200)
         .optional()
         .describe(
-            "One short literal term the user actually said, e.g. \"git\". Multi-word phrases match nothing. Omit for anything thematic — the full catalog is one page.",
+            "The one word the user's question is about, e.g. \"what helps with my git workflows\" → \"git\". " +
+                "Search is literal, so pass a single term — multi-word phrases match nothing. Pass one whenever the " +
+                "user is after a particular kind of thing, even a broad or thematic one; a term that matches nothing " +
+                "falls back to the whole catalog by itself, so there is no cost to trying. Omit it only when the user " +
+                "asks to see everything.",
         ),
     // No upper bound in the schema: a host model that asks for 50 should get
     // the capped page, not a validation error it can do nothing about.
@@ -617,13 +621,15 @@ export function registerBrowse(server: Pick<McpServer, "registerTool">, deps: Br
             "Search the Agent Facets registry for facets matching a query — what each does, who " +
             "published it, and what is inside it. Use this whenever someone asks what facets exist " +
             "or wants to find one to install. Call it AT MOST ONCE per question — every call renders " +
-            "its own panel, and the user can refine the search there. Search is literal: put a real " +
-            "keyword in `query` (\"git\", not \"git related facets\"), set `type` for an asset kind " +
-            "(\"git skills\" → type skill; \"MCP servers\" → type server), and omit `query` for " +
-            "anything thematic. The result already includes each facet's description, asset counts, " +
-            "and install state — answer discovery questions from it directly; do not call " +
-            "facet_detail, facet_contents, or facet_project to embellish the answer (facet_detail is " +
-            "for when the user asks to open ONE facet).",
+            "its own panel, and the user can refine the search there. Always take the subject out of " +
+            "the user's own question and pass it as `query`: \"what facets help with my git workflows\" " +
+            "is a search for \"git\", not a request for the whole catalog. Search is literal, so one " +
+            "keyword and never a phrase (\"git\", not \"git related facets\"); a keyword that matches " +
+            "nothing falls back to everything published on its own. Omit `query` only when the user asks " +
+            "to see everything. Set `type` for an asset kind (\"git skills\" → type skill; \"MCP servers\" " +
+            "→ type server). The result already includes each facet's description, asset counts, and " +
+            "install state — do not call facet_detail, facet_contents, or facet_project to embellish it " +
+            "(facet_detail is for when the user asks to open ONE facet).",
         inputSchema: browseShape,
         annotations: {
             title: "Browse facets",
