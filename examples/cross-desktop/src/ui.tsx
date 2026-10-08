@@ -57,6 +57,9 @@ function Workspace() {
         if (active) setBridge(value)
       },
       setNotice,
+      () => {
+        if (active) setStep(2)
+      },
     )
       .then(async (value) => {
         const result = await value.call('meeting_open')
@@ -352,7 +355,7 @@ function Workspace() {
                     void perform('Sending to assistant…', async () => {
                       await bridge!.request(plan)
                       setNotice(
-                        'Sent to your assistant. Continue in the conversation; its tool result updates this worksheet.',
+                        'Sent to your assistant. Continue in the conversation; open the updated worksheet returned by your assistant.',
                       )
                       setStep(2)
                     })

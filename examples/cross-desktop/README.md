@@ -23,7 +23,7 @@ After building, configure a stdio MCP server with the absolute Bun executable an
 
 After installing the facet, use its installed `skills/meeting-to-action/assets/server.js` companion instead. The example installer writes `claude-desktop.example.json` and `codex.example.toml` in the consuming project with resolved paths. Review and merge the applicable snippet into the host configuration, then reconnect. The installer does not modify global desktop settings.
 
-The host must support MCP Apps to render the worksheet. “Ask assistant for a plan” sends a user message through the MCP Apps bridge. The host assistant calls `meeting_plan`; its validated result becomes an AG-UI `STATE_SNAPSHOT` and updates the CopilotKit `useAgent` state. Saving edits calls the same tool. Plan data is held in the server session, not persisted to disk; export before ending it. Multiple views attached to one server share this plan.
+The host must support MCP Apps to render the worksheet. “Ask assistant for a plan” sends a user message through the MCP Apps bridge. The host assistant calls `meeting_plan`; its validated result becomes an AG-UI `STATE_SNAPSHOT` and updates the CopilotKit `useAgent` state. Hosts may render that result in a new worksheet card; populated host proposals open in Review. Saving edits calls the same tool. Plan data is held in the server session, not persisted to disk; export before ending it. Multiple views attached to one server share this plan.
 
 ## Package and verify
 
@@ -52,7 +52,8 @@ The smoke client launches the server with `/tmp` as its working directory, lists
 - Browser: sample loading, owner editing, save, and honest host-unavailable state exercised through the browser UI.
 - MCP protocol: stdio tools, UI resource, valid host plan and invalid plan exercised with the SDK client.
 - Packaging: fresh local CLI install and repeated install succeeded; installed server passed the same smoke check outside the source checkout.
-- Native Claude Desktop and Codex rendering: not yet verified. Protocol and package checks do not establish host rendering support.
+- Native Claude Desktop: inline rendering and the assistant round trip were verified. The worksheet composed a notes request, the request was sent, and the returned meeting_plan proposal showed Maya due 2026-10-12 while Leo’s unspecified date remained blank. Claude rendered the proposal in a new worksheet card.
+- Native Codex rendering: not yet verified. Protocol and package checks do not establish host rendering support.
 
 The local AG-UI adapter forwards validated host state and emits lifecycle events. It does not generate sample content on behalf of an assistant. CopilotKit's headless/context exports keep the self-contained resource within the MCP SDK's default message limit. The current core registration API is named `agents__unsafe_dev_only`; this is a prototype integration, with exact dependency versions recorded in the lockfile.
 

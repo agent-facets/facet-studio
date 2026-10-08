@@ -47,6 +47,7 @@ export async function connectBridge(
   agent: MeetingAgent,
   changed: (bridge: Bridge) => void,
   failed: (message: string) => void,
+  hostPlanReceived: () => void,
 ): Promise<Bridge> {
   if (window.parent === window) {
     const bridge: Bridge = {
@@ -74,13 +75,11 @@ export async function connectBridge(
   app.ontoolresult = (result) => {
     const payload = result.structuredContent
     if (payload?.plan)
-      void agent
-        .accept(payload.plan)
-        .catch(() =>
-          failed(
-            'The assistant returned an invalid plan. Ask it to correct the tool input.',
-          ),
-        )
+      void receiveHostPlan(agent, payload.plan, hostPlanReceived).catch(() =>
+        failed(
+          'The assistant returned an invalid plan. Ask it to correct the tool input.',
+        ),
+      )
   }
   app.onhostcontextchanged = (context) => {
     if (context.theme) document.documentElement.dataset.theme = context.theme
@@ -104,7 +103,7 @@ export async function connectBridge(
         content: [
           {
             type: 'text',
-            text: `Turn these meeting notes into an action plan using meeting_plan. Preserve the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Notes:\n${plan.notes}`,
+            text: planRequest(plan),
           },
         ],
       })
@@ -116,4 +115,24 @@ export async function connectBridge(
   }
   changed(bridge)
   return bridge
+}
+
+/** Preserve user-authored meeting identity in the host request. @param plan Current worksheet. @returns Assistant instruction and meeting content. */
+export function planRequest(plan: Plan): string {
+  return `Turn these meeting notes into an action plan using meeting_plan. Preserve this exact meeting title and the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
+}
+
+/** Deliver host state and open review only for a populated host proposal. @param agent State adapter. @param value Untrusted host plan. @param reviewed Review navigation callback. @returns State delivery completion. */
+export async function receiveHostPlan(
+  agent: MeetingAgent,
+  value: unknown,
+  reviewed: () => void,
+): Promise<void> {
+  const plan = parsePlan(value)
+  await agent.accept(plan)
+  if (
+    plan.source === 'host' &&
+    (plan.notes.trim() || plan.decisions.trim() || plan.actions.length > 0)
+  )
+    reviewed()
 }
