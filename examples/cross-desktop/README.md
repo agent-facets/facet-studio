@@ -1,12 +1,14 @@
 # Facet Studio local catalogue
 
+**Presenting or handing this off?** Follow [DEMO.md](DEMO.md) for setup, host connection, the five-minute walkthrough, and recovery steps.
+
 A Bun prototype that discovers and installs facets, then opens their packaged apps through one connected MCP server. Studio has its own installable facet containing its UI, server and complete local catalogue. The catalogue currently contains the real Meeting to Action facet and is explicitly local; it does not search the public registry.
 
 The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit registered frontend tools, rendered human approval components, and shared AG-UI state. Search runs through a frontend handler. Installation and saving first await the actual CopilotKit human-in-the-loop renderer; declining produces no install/save call. Approved handlers use the existing MCP transport adapter. No separate model API or model credential is used.
 
 ## Private registry packages
 
-The release manifests prepare `@agentfacets/facet-studio@0.1.1` and `@agentfacets/meeting-to-action@0.1.1` with `private: true`. Publication and registry access are separate from local build verification. Once these versions are published, sign in with an account that has access to the `@agentfacets` scope, then install the selected package in a consuming project:
+The private 0.1.1 releases are [@agentfacets/facet-studio](https://agentfacets.io/facets/@agentfacets/facet-studio) and [@agentfacets/meeting-to-action](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Sign in with an account granted access to the `@agentfacets` organization, then install the selected package in a consuming project. Anonymous requests cannot access these packages:
 
 ```sh
 facet login
@@ -111,17 +113,18 @@ bun scripts/smoke.ts /absolute/path/to/installed/skills/meeting-to-action/assets
 
 The smoke client launches the server with `/tmp` as its working directory, lists four tools, reads the inline app resource, accepts a host plan, and rejects an invalid plan.
 
-The new 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mounted hooks, core handlers and rendered buttons. The native evidence below describes the preceding 0.1.0 release; 0.1.1 still requires a native walkthrough.
+The 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mounted hooks, core handlers and rendered buttons, plus the native Claude walkthrough below.
 
 ## Verified surfaces
 
 - Browser: sample loading, owner editing, save, and honest host-unavailable state exercised through the browser UI.
 - MCP protocol: stdio tools, UI resource, valid host plan and invalid plan exercised with the SDK client.
 - Packaging: fresh local CLI install and repeated install succeeded; installed server passed the same smoke check outside the source checkout.
+
 | Native surface | Verified evidence | Remaining limit |
 |---|---|---|
-| Claude Desktop, final presentation build `1269633` | Fresh-project search, inline install, stable Open without a post-install restart, direct Capture notes entry, and a submitted plain-language request with no generated routing or schema text. The host returned an inline Review plan with Pilot readiness preserved, Maya due October 12, Leo’s date blank, and feedback unassigned. Native editing to Rae and Save produced “Plan saved for this server session.” | Verified in this local Claude setup with the bundled catalogue. Other host versions and catalogues were not exercised. |
-| Codex, existing v2 connection | User-provided inline rendering image; user changed Maya to Rae and reported Save succeeded. An independent native stable-Open readback returned Rae with host provenance and edited state. | The complete meeting-card screenshot was not inspected. A new connection running final `1269633` and its assistant request flow have not been verified. |
+| Claude Desktop, 0.1.1 | Native search click, decline installation with no install, approve real CLI installation, and Open into Capture notes. The host returned a plan; editing Maya to Rae followed by declining Save preserved the edits, and approving Save succeeded. No post-install host restart was needed. | Verified with the bundled local catalogue in this setup, not every host version or catalogue. |
+| Codex, earlier 0.1.0 connection | User-provided inline rendering image; user edited Maya to Rae and reported Save succeeded. Independent stable-Open readback returned Rae with host provenance and edited state. | The newly configured 0.1.1 connection has not had its full visual/interaction walkthrough verified. Do not present the earlier result as 0.1.1 approval-flow evidence. |
 
 The local AG-UI adapter forwards validated host state and emits lifecycle events. It does not generate sample content on behalf of an assistant. CopilotKit's headless/context exports keep the self-contained resource within the MCP SDK's default message limit. The current core registration API is named `agents__unsafe_dev_only`; this is a prototype integration, with exact dependency versions recorded in the lockfile.
 

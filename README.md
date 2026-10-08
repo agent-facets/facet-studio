@@ -2,6 +2,12 @@
 
 facet-studio is a toolkit for authoring, building, and installing agent facets — reusable collections of skills and commands for AI assistants. It includes skills and commands that guide you through the full facet workflow.
 
+## Run the cross-desktop demo
+
+Start with the [presenter runbook](examples/cross-desktop/DEMO.md) for the runnable **Studio → install → Meeting to Action** prototype. It includes source setup, Claude Desktop and Codex connection commands, a five-minute walkthrough, and reset/troubleshooting instructions. [Implementation and verification notes](examples/cross-desktop/README.md) describe the portable private packages and CopilotKit workflow.
+
+That prototype lives in `examples/cross-desktop/` and uses MCP Apps, CopilotKit frontend tools, human approval, and AG-UI state. The console/plugin sections below describe the separate legacy implementation; their host support table does not apply to the prototype.
+
 ## See it in action
 
 ### Claude Desktop (Code view)
@@ -45,9 +51,9 @@ The CLI installs facet-studio through both configured adapters, lists the resolv
 | Tool | facet_project | What this project has installed, read from facets.json and facets.lock. |
 | Tool | facet_manifest | The facet.json being authored, and whatever has been built from it. |
 
-## The console and the MCP server
+## The legacy console and MCP server
 
-facet-studio ships with an MCP server and a Claude Code plugin. The plugin provides tools and text output in Claude Code; the MCP server adds the console panel to Claude Desktop (via connector setup), ChatGPT, and Cursor. Claude Code CLI is terminal-only and returns full text output. Codex Desktop does not render panels yet (upstream bug tracked). Every operation returns complete text regardless—the console is an enhancement, not a requirement.
+facet-studio ships with an MCP server and a Claude Code plugin. The plugin provides tools and text output in Claude Code; the MCP server adds the console panel to Claude Desktop (via connector setup), ChatGPT, and Cursor. Claude Code CLI is terminal-only and returns full text output. The legacy console’s Codex Desktop panel support remains pending (upstream issue tracked). The separate cross-desktop prototype has verified Codex inline rendering; see its runbook for the version-specific interaction limits. Every operation returns complete text regardless—the console is an enhancement, not a requirement.
 
 Where it renders, every facet tool points at one panel, and that panel stays put across calls. It has three screens:
 
@@ -74,7 +80,7 @@ The server bundles inside the Claude plugin:
 | ChatGPT | Yes | Connector-enabled |
 | Cursor | Yes | MCP-enabled |
 | Claude Code CLI | No | Terminal only |
-| Codex Desktop | No | Pending upstream |
+| Codex Desktop, legacy console | No | Pending upstream; separate prototype evidence is in the runbook |
 
 ## See the panels in Claude Desktop
 
