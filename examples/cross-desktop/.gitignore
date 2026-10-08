@@ -1,0 +1,8 @@
+node_modules/
+dist/
+facet/skills/meeting-to-action/assets/*.js
+facet/skills/meeting-to-action/assets/*.html
+facet/dist/
+installed/
+meeting-to-action-project/
+.impeccable/review/
