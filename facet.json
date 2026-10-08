@@ -14,7 +14,8 @@
     }
   },
   "files": [
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "agents": {
     "facet-author": {

@@ -1,6 +1,7 @@
 {
   "name": "facet-studio-dev",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build:plugin": "bun scripts/build-plugin.ts",
