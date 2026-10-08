@@ -63,12 +63,10 @@ export function parsePlan(value: unknown): Plan {
     result.actions.length
   )
     throw new Error('Each action needs a unique ID.')
-  if (
-    result.actions.some(
-      (action) => action.due !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(action.due),
+  if (result.actions.some((action) => !validDueDate(action.due)))
+    throw new Error(
+      'Use a valid calendar date in YYYY-MM-DD format or leave it empty.',
     )
-  )
-    throw new Error('Use a date in YYYY-MM-DD format or leave it empty.')
   return result
 }
 
@@ -85,4 +83,15 @@ export function editPlan(plan: Plan, patch: Partial<Plan>): Plan {
     source: plan.source === 'empty' ? 'edited' : plan.source,
     edited: true,
   }
+}
+
+/** Check date-only values without timezone shifts. @param value Optional due date. @returns Whether the calendar date exists. */
+function validDueDate(value: string): boolean {
+  if (value === '') return true
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000-'))
+    return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return (
+    Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+  )
 }

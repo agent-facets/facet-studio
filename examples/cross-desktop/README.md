@@ -32,6 +32,7 @@ bun test
 bun run typecheck
 bun run build
 bun scripts/smoke.ts
+bun scripts/install-smoke.ts
 facet build facet --verify
 facet build facet
 ```
@@ -54,3 +55,5 @@ The smoke client launches the server with `/tmp` as its working directory, lists
 - Native Claude Desktop and Codex rendering: not yet verified. Protocol and package checks do not establish host rendering support.
 
 The local AG-UI adapter forwards validated host state and emits lifecycle events. It does not generate sample content on behalf of an assistant. CopilotKit's headless/context exports keep the self-contained resource within the MCP SDK's default message limit. The current core registration API is named `agents__unsafe_dev_only`; this is a prototype integration, with exact dependency versions recorded in the lockfile.
+
+The fresh-install check creates a new temporary project, retains the caller's existing Facet adapter configuration, installs through the real CLI, compares bundled/installed hashes, repeats the installation, and launches the installed server from `/tmp`. Do not point `FACET_DIR` at an empty directory for this check: that hides the available adapters. If using an isolated Facet home, install a compatible adapter into that home first. The fixture path is printed and retained for inspection.

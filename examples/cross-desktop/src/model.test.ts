@@ -66,3 +66,22 @@ test('editing a sample preserves provenance through validation and export state'
   expect(edited.edited).toBe(true)
   expect(edited.title).toBe('Edited example')
 })
+
+test('due dates must exist in the calendar, including leap days', () => {
+  for (const due of ['2026-99-99', '2026-02-29', '2026-04-31', '0000-01-01']) {
+    expect(() =>
+      parsePlan({
+        ...samplePlan,
+        actions: [{ ...samplePlan.actions[0]!, due }],
+      }),
+    ).toThrow()
+  }
+  for (const due of ['', '2028-02-29', '2026-04-30']) {
+    expect(
+      parsePlan({
+        ...samplePlan,
+        actions: [{ ...samplePlan.actions[0]!, due }],
+      }).actions[0]?.due,
+    ).toBe(due)
+  }
+})
