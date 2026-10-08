@@ -39,7 +39,7 @@ export type CatalogEntry = {
   name: string
   description: string
   version: string
-  source: 'local'
+  source: 'local' | 'registry'
   sourcePath: string
   skillPath: string
   companions: string[]
@@ -270,6 +270,7 @@ export async function findInstalledApp(
   entry: CatalogEntry,
   project: string,
 ): Promise<InstalledApp | undefined> {
+  if (entry.source === 'registry') return findRegistryApp(entry, project)
   const skillName = await lockedSkill(entry, project)
   if (!skillName) return
   for (const root of await installedRoots(project, skillName)) {
@@ -304,5 +305,110 @@ export async function findInstalledApp(
     } catch {
       /* Unrelated or changed materialized assets cannot become executable apps. */
     }
+  }
+}
+
+/** Verify registry provenance and every materialized skill file against CLI integrity receipts. @param entry Approved registry version and app identity. @param project Consuming project. @returns Verified installed child or no matching installation. */
+async function findRegistryApp(
+  entry: CatalogEntry,
+  project: string,
+): Promise<InstalledApp | undefined> {
+  const Receipt = type({
+    integrity: /^sha256:[a-f0-9]{64}$/,
+    version: 'string',
+    source: { kind: "'registry'", registry: 'string' },
+    assets: type({
+      type: 'string',
+      name: 'string',
+      scope: 'string',
+      materialization: { kind: 'string', 'as?': 'string' },
+      files: type({ path: 'string', integrity: 'string' })
+        .array()
+        .atMostLength(300),
+    }).array(),
+  })
+  try {
+    const lock = type({
+      lockfileVersion: 'number',
+      facets: { '[string]': 'unknown' },
+    }).assert(await Bun.file(join(project, 'facets.lock')).json())
+    if (lock.lockfileVersion !== 0.3) return
+    const receipt = Receipt.assert(lock.facets[entry.name])
+    if (
+      receipt.version !== entry.version ||
+      receipt.source.registry !== 'https://api.agentfacets.io'
+    )
+      return
+    const asset = receipt.assets.find(
+      (asset) =>
+        asset.type === 'skill' &&
+        asset.scope === 'project' &&
+        asset.name === entry.descriptor.id,
+    )
+    if (!asset || !['authored', 'aliased'].includes(asset.materialization.kind))
+      return
+    const name =
+      asset.materialization.kind === 'aliased'
+        ? asset.materialization.as
+        : asset.name
+    if (!name || !/^[a-z0-9-]{1,64}$/.test(name)) return
+    const prefix = `skills/${asset.name}/`
+    if (
+      !asset.files.length ||
+      new Set(asset.files.map((file) => file.path)).size !== asset.files.length
+    )
+      return
+    for (const root of await installedRoots(project, name)) {
+      try {
+        const hashes: string[] = []
+        for (const file of asset.files) {
+          if (
+            !file.path.startsWith(prefix) ||
+            !/^sha256:[a-f0-9]{64}$/.test(file.integrity)
+          )
+            throw new Error('Invalid receipt.')
+          const installedFile = await regularFile(
+            root,
+            file.path.slice(prefix.length),
+          )
+          // Adapters transform the skill primary; executable and UI companions retain canonical bytes.
+          if (file.path === prefix + 'SKILL.md') continue
+          const actual = `sha256:${await digest(installedFile)}`
+          if (actual !== file.integrity)
+            throw new Error('Installed bytes differ from receipt.')
+          hashes.push(`${file.path}:${actual}`)
+        }
+        const descriptor = parseDescriptor(
+          await Bun.file(await regularFile(root, 'app.json')).json(),
+        )
+        if (
+          descriptor.id !== entry.descriptor.id ||
+          descriptor.version !== entry.version ||
+          descriptor.openTool !== entry.descriptor.openTool
+        )
+          continue
+        for (const path of [
+          'app.json',
+          'SKILL.md',
+          descriptor.entrypoint,
+          'assets/view.html',
+        ]) {
+          if (!asset.files.some((file) => file.path === prefix + path))
+            throw new Error('Missing companion receipt.')
+        }
+        return {
+          descriptor,
+          root,
+          entrypoint: await regularFile(root, descriptor.entrypoint),
+          fingerprint: createHash('sha256')
+            .update(hashes.join(':'))
+            .digest('hex'),
+        }
+      } catch {
+        /* A changed adapter copy is never executable. */
+      }
+    }
+  } catch {
+    /* Missing or invalid CLI receipts do not establish installation. */
   }
 }

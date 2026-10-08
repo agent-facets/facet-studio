@@ -8,11 +8,13 @@ The 0.1.2 opening “Can you find me a facet to organize meeting notes into acti
 
 ## Recording
 
-40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
+Historical 0.1.2 local-catalogue recording: 40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
 
 ![Natural request, contextual search, approved installation, meeting notes, host action plan, Rae edit, and approved save in Claude Desktop](docs/media/meeting-workflow.gif)
 
 [Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
+
+Studio 0.1.4 now searches the actual authenticated registry and downloads Meeting to Action separately. The recording and native evidence above are historical 0.1.2 local-catalogue runs; the registry version needs a fresh native rehearsal.
 
 ## Prepare from source
 
@@ -57,7 +59,7 @@ facet adapter add claude-code
 facet adapter add codex
 ```
 
-Adapters materialize package files; they do not create the host's MCP connection. Local bundled installation does not require registry login. For the private registry packages, sign in with an account granted access to the `@agentfacets` organization:
+Adapters materialize package files; they do not create the host's MCP connection. Registry search and installation require CLI login. Sign in with an account granted access to the `@agentfacets` organization:
 
 ```sh
 facet login
@@ -117,7 +119,7 @@ Rehearse the entire 0.1.2 flow before relying on Codex for the example. Its earl
 
 All names and notes here are fictional.
 
-1. **Discover, about one minute.** Ask the assistant: “Can you find me a facet to organize meeting notes into action items?” The connected server's discovery guidance asks the host to derive relevant task keywords and show a matching inline facet. The first search call carries those keywords, so the search field is already filled in. Explain that this is a configured local catalogue, not a public registry search. Hosts still decide which tools to use; if no card appears, use the troubleshooting step below.
+1. **Discover, about one minute.** Ask the assistant: “Can you find me a facet to organize meeting notes into action items?” The connected server's discovery guidance asks the host to derive relevant task keywords and show a matching inline facet. The first search call carries those keywords, so the search field is already filled in. Explain that this is a authenticated @agentfacets registry search limited to supported apps, currently Meeting to Action. Hosts still decide which tools to use; if no card appears, use the troubleshooting step below.
 2. **Review installation, about one minute.** Click Install on Meeting to Action. In the rendered review component, choose Decline. Nothing is installed. Click Install again, then Approve. This invokes the real Facet CLI. When it finishes, choose Open. If the host puts the Open request in its composer, send it. The installed worksheet opens at Capture notes without restarting the connection.
 3. **Use host reasoning, about one minute.** Set the title to `Pilot readiness` and paste the notes below. Choose Ask assistant. Send the plain-language request if it appears in the composer. The host assistant returns an action plan into the worksheet; it may create a new card that opens directly in Review.
 4. **Review and save, about one minute.** Confirm Maya's date, Leo's blank date, and the unassigned feedback task. Change Maya to Rae. Choose Save plan, inspect the approval snapshot, and Decline. The local edit remains; no save runs. Choose Save plan again and Approve. Look for “Approved plan saved for this server session.”
@@ -159,22 +161,22 @@ Key files, relative to this directory:
 
 ## Private packages and portability
 
-Both versions are private and require organization access:
+After the corresponding releases are published, both packages require organization access. Meeting to Action is maintained in its own [repository](https://github.com/agent-facets/meeting-to-action):
 
-- [@agentfacets/facet-studio 0.1.3](https://agentfacets.io/facets/@agentfacets/facet-studio)
-- [@agentfacets/meeting-to-action 0.1.2](https://agentfacets.io/facets/@agentfacets/meeting-to-action)
+- [@agentfacets/facet-studio 0.1.4](https://agentfacets.io/facets/@agentfacets/facet-studio)
+- [@agentfacets/meeting-to-action 0.1.3](https://agentfacets.io/facets/@agentfacets/meeting-to-action)
 
 The source setup above is the simplest reproducible route. To demonstrate package travel separately, use a fresh project with your normal Facet home:
 
 ```sh
 export FACET_PACKAGE_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-package-demo.XXXXXX")"
 cd "$FACET_PACKAGE_PROJECT"
-facet add @agentfacets/facet-studio@0.1.3
+facet add @agentfacets/facet-studio@0.1.4
 # Optional independent meeting package:
-facet add @agentfacets/meeting-to-action@0.1.2
+facet add @agentfacets/meeting-to-action@0.1.3
 ```
 
-The selected adapter materializes `skills/facet-studio/assets/studio-server.js` beneath its output directory, such as `.agents/` or `.opencode/`. Inspect the install output to locate the actual file. An installed Studio host entry points to that absolute companion instead of the source `dist/studio-server.js`. Keep its neighboring HTML, catalogue and nested companion files together. Bun remains required; the source checkout and `node_modules` do not. Avoid changing the working example connection just to show this optional path.
+The selected adapter materializes `skills/facet-studio/assets/studio-server.js` beneath its output directory, such as `.agents/` or `.opencode/`. Inspect the install output to locate the actual file. An installed Studio host entry points to that absolute companion instead of the source `dist/studio-server.js`. Keep its neighboring Studio HTML companion with the server. Meeting UI and server assets are downloaded separately when approved. Bun remains required; the source checkout and `node_modules` do not. Avoid changing the working example connection just to show this optional path.
 
 ## Reset and recover
 
@@ -188,7 +190,7 @@ The selected adapter materializes `skills/facet-studio/assets/studio-server.js` 
 | Old UI or unknown tool | Disable the old demo connection, reconnect the intended entry, and start a fresh chat. Do not ask the assistant to use an older standalone `meeting_open` connection. |
 | Request appears in composer | Send it. The app prepares the host request; it does not promise the host will submit it automatically. |
 | Install cannot finish | Run `facet adapter list` and ensure an adapter is installed. Check the consuming directory is writable and the host's PATH includes the CLI. Preserve the normal Facet home. |
-| Private package unavailable | Run `facet login` and `facet whoami`; confirm organization membership. Anonymous access is intentionally unavailable. The bundled local catalogue is independent of registry search. |
+| Private package unavailable | Run `facet login` and `facet whoami`; confirm organization membership. Anonymous access is intentionally unavailable. Studio does not fall back to a bundled local catalogue. |
 | Plan disappears after restart | That is session behavior. Use Export Markdown before restarting. |
 | Decline left an edit visible | Expected: decline prevents installation or saving, not local editing. Approve a later review to commit the snapshot to the running server session. |
 
@@ -204,9 +206,9 @@ Open `http://127.0.0.1:4328`. This shows the same meeting worksheet with sample 
 ## Rehearsal checklist and limits
 
 - Build from the intended source revision and connect one fresh demo entry.
-- Confirm the local catalogue appears, decline one install, then approve and Open.
+- Confirm the registry result appears, decline one install, then approve and Open.
 - Confirm the host proposal preserves missing assignments; decline one save, then approve and Export.
 
-The catalogue is fixed at startup and currently contains one real meeting fixture. Each app has one primary UI. CopilotKit uses the installed SDK's `agents__unsafe_dev_only` registration API; this is prototype integration. Client approval controls the demonstrated UI workflow, not authorization against direct MCP tool calls. The server's path, catalogue and installed-byte checks are separate protections.
+The stable app allowlist currently supports Meeting to Action. Search results and versions come from the real registry; the approved package supplies the installed UI and server. The CLI text search parser is bounded and fails on unsupported output. Each app has one primary UI. CopilotKit uses the installed SDK's `agents__unsafe_dev_only` registration API; this is prototype integration. Client approval controls the demonstrated UI workflow, not authorization against direct MCP tool calls. The server's path, catalogue and installed-byte checks are separate protections.
 
 The full native 0.1.2 Claude workflow has been exercised. Both decline paths were also exercised in the earlier 0.1.1 run. The current Codex visual/interaction rehearsal remains pending. This is a viable local demo with explicit limits, not a claim that every host and deployment configuration is fully tested.
