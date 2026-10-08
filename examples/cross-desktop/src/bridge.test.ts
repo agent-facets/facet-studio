@@ -1,7 +1,12 @@
 import { expect, test } from 'bun:test'
 import { App } from '@modelcontextprotocol/ext-apps'
 import { MeetingAgent } from './agent'
-import { connectBridge, planRequest, receiveHostPlan } from './bridge'
+import {
+  connectBridge,
+  planRequest,
+  planModelContext,
+  receiveHostPlan,
+} from './bridge'
 import { emptyPlan, samplePlan } from './model'
 
 test('assistant request retains the exact title and notes', () => {
@@ -66,7 +71,8 @@ test('host bridge waits for routing metadata before its first server call', asyn
     const bridge = await pending
     await bridge.call('meeting_plan', { plan: samplePlan })
     expect(calls).toEqual(['app_example_plan'])
-    expect(planRequest(samplePlan, 'app_example_plan')).toContain(
+    expect(bridge.installed).toBe(false)
+    expect(planModelContext(samplePlan, 'app_example_plan')).toContain(
       'using app_example_plan.',
     )
   } finally {
@@ -136,10 +142,15 @@ test('stable bridge validates metadata and routes UI calls and assistant request
     ])
     await expect(bridge.call('unknown')).rejects.toThrow('does not expose')
     await bridge.request(samplePlan)
-    expect(prompt).toContain(metadata.tool)
-    expect(prompt).toContain('meeting_plan')
-    expect(prompt).toContain('Original schema')
-    expect(planRequest(samplePlan, undefined, metadata)).toContain(
+    expect(bridge.installed).toBe(true)
+    expect(prompt).not.toContain(metadata.tool)
+    expect(prompt).not.toContain('meeting_plan')
+    expect(prompt).not.toContain('Original schema')
+    expect(prompt).not.toContain('source=')
+    expect(prompt).toContain(
+      'installed Meeting to Action worksheet opened through Facet Studio',
+    )
+    expect(planModelContext(samplePlan, undefined, metadata)).toContain(
       '"tool":"meeting_plan","arguments":',
     )
   } finally {
@@ -165,3 +176,216 @@ test('bridge metadata accepts the same exact schema-size boundary as the proxy',
   tools[0]!.description += 'x'
   expect(() => parseFacetBridge(metadata)).toThrow()
 })
+
+test('model context is acknowledged before a plain request and optional failures retain a natural fallback', async () => {
+  const metadata = {
+    tool: 'studio_app_0123456789abcdef',
+    appId: 'meeting-to-action',
+    tools: [
+      {
+        name: 'meeting_plan',
+        inputSchema: { type: 'object', required: ['plan'] },
+      },
+    ],
+  }
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { parent: {} },
+  })
+  try {
+    for (const mode of [
+      'text',
+      'structured',
+      'unsupported',
+      'refused',
+    ] as const) {
+      const app = new App({ name: 'test', version: '1' }, {})
+      app.connect = async () => {}
+      app.getHostCapabilities = () =>
+        mode === 'unsupported'
+          ? {}
+          : {
+              updateModelContext:
+                mode === 'structured'
+                  ? { structuredContent: {} }
+                  : { text: {} },
+            }
+      const acknowledgment = Promise.withResolvers<void>()
+      const events: string[] = []
+      let context = ''
+      let timeout: number | undefined
+      let visible = ''
+      app.updateModelContext = async (params, options) => {
+        events.push('context')
+        context = JSON.stringify(params)
+        timeout = options?.timeout
+        if (mode === 'refused') throw new Error('unsupported by host')
+        await acknowledgment.promise
+        events.push('acknowledged')
+        return {}
+      }
+      app.sendMessage = async (params) => {
+        events.push('message')
+        visible = JSON.stringify(params.content)
+        return {}
+      }
+      try {
+        const pending = connectBridge(
+          new MeetingAgent(),
+          () => {},
+          () => {},
+          () => {},
+          () => app,
+        )
+        app.ontoolresult?.({
+          content: [],
+          structuredContent: { plan: samplePlan },
+          _meta: { facetBridge: metadata },
+        })
+        const bridge = await pending
+        const request = bridge.request({
+          ...samplePlan,
+          title: 'Pilot readiness',
+        })
+        await Promise.resolve()
+        if (mode === 'text' || mode === 'structured') {
+          expect(events).toEqual(['context'])
+          acknowledgment.resolve()
+        }
+        await request
+        expect(events).toEqual(
+          mode === 'unsupported'
+            ? ['message']
+            : mode === 'refused'
+              ? ['context', 'message']
+              : ['context', 'acknowledged', 'message'],
+        )
+        if (mode !== 'unsupported') {
+          expect(timeout).toBe(3000)
+          expect(context).toContain(metadata.tool)
+          expect(context).toContain('meeting_plan')
+          expect(context).toContain('Original schema')
+          expect(context).toContain('Pilot readiness')
+        }
+        expect(visible).toContain('Pilot readiness')
+        expect(visible).toContain(samplePlan.notes.split('\n')[0]!)
+        for (const detail of [
+          metadata.tool,
+          'meeting_plan',
+          'inputSchema',
+          'Original schema',
+          'source=',
+          'arguments',
+        ])
+          expect(visible).not.toContain(detail)
+      } finally {
+        await app.close()
+      }
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('browser remains uninstalled and cannot request host reasoning', async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const browser: { parent?: unknown } = {}
+  browser.parent = browser
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: browser,
+  })
+  try {
+    const bridge = await connectBridge(
+      new MeetingAgent(),
+      () => {},
+      () => {},
+      () => {},
+    )
+    expect(bridge.connected).toBe(false)
+    expect(bridge.installed).toBe(false)
+    await expect(bridge.request(samplePlan)).rejects.toThrow(
+      'unavailable in this browser',
+    )
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('real SDK model-context timeout falls back to one plain request', async () => {
+  const { AppBridge } = await import(
+    '@modelcontextprotocol/ext-apps/app-bridge'
+  )
+  const { InMemoryTransport } = await import(
+    '@modelcontextprotocol/sdk/inMemory.js'
+  )
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { parent: {} },
+  })
+  const host = new AppBridge(
+    null,
+    { name: 'timeout-host', version: '1' },
+    { updateModelContext: { text: {} }, message: { text: {} } },
+  )
+  const app = new App({ name: 'test', version: '1' }, {}, { autoResize: false })
+  const [appTransport, hostTransport] = InMemoryTransport.createLinkedPair()
+  const connect = app.connect.bind(app)
+  app.connect = async () => connect(appTransport)
+  let contextCalls = 0
+  let visible = ''
+  let messages = 0
+  host.onupdatemodelcontext = () => {
+    contextCalls += 1
+    return new Promise(() => {})
+  }
+  host.onmessage = async (params) => {
+    messages += 1
+    visible = JSON.stringify(params.content)
+    return {}
+  }
+  host.oninitialized = () => {
+    void (async () => {
+      await host.sendToolInput({ arguments: {} })
+      await host.sendToolResult({
+        content: [],
+        structuredContent: { plan: samplePlan },
+        _meta: {
+          facetBridge: {
+            tool: 'studio_app_0123456789abcdef',
+            appId: 'meeting-to-action',
+            tools: [{ name: 'meeting_plan', inputSchema: { type: 'object' } }],
+          },
+        },
+      })
+    })()
+  }
+  try {
+    await host.connect(hostTransport)
+    const bridge = await connectBridge(
+      new MeetingAgent(),
+      () => {},
+      () => {},
+      () => {},
+      () => app,
+    )
+    const started = Date.now()
+    await bridge.request(samplePlan)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2900)
+    expect(Date.now() - started).toBeLessThan(4500)
+    expect(contextCalls).toBe(1)
+    expect(messages).toBe(1)
+    expect(visible).toContain('installed Meeting to Action worksheet')
+    expect(visible).not.toContain('studio_app_')
+    expect(visible).not.toContain('Original schema')
+  } finally {
+    await app.close()
+    await host.close()
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+}, 6000)

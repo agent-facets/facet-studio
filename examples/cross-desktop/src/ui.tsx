@@ -54,7 +54,13 @@ function Workspace() {
     void connectBridge(
       meetingAgent,
       (value) => {
-        if (active) setBridge(value)
+        if (active) {
+          setBridge(value)
+          if (value.installed) {
+            setInstalled(true)
+            setStep((current) => (current === 0 ? 1 : current))
+          }
+        }
       },
       setNotice,
       () => {

@@ -61,6 +61,7 @@ export function parseFacetBridge(value: unknown): FacetBridge {
 
 export type Bridge = {
   connected: boolean
+  installed: boolean
   call: (
     name: string,
     args?: Record<string, unknown>,
@@ -87,6 +88,7 @@ export async function connectBridge(
   if (window.parent === window) {
     const bridge: Bridge = {
       connected: false,
+      installed: false,
       async call(name, args = {}) {
         const response = await fetch('/api/tool', {
           method: 'POST',
@@ -178,6 +180,7 @@ export async function connectBridge(
   if (context?.theme) document.documentElement.dataset.theme = context.theme
   const bridge: Bridge = {
     connected: true,
+    installed: Boolean(facetBridge),
     async call(name, args = {}) {
       if (facetBridge && !facetBridge.tools.some((tool) => tool.name === name))
         throw new Error('The installed app does not expose this operation.')
@@ -192,12 +195,41 @@ export async function connectBridge(
       return record(result.structuredContent)
     },
     async request(plan) {
+      const context = planModelContext(
+        plan,
+        toolNames.meeting_plan,
+        facetBridge,
+      )
+      const supported = app.getHostCapabilities()?.updateModelContext
+      try {
+        if (supported?.text) {
+          await app.updateModelContext(
+            {
+              content: [
+                {
+                  type: 'text',
+                  text: context,
+                  annotations: { audience: ['assistant'] },
+                },
+              ],
+            },
+            { timeout: 3000 },
+          )
+        } else if (supported?.structuredContent) {
+          await app.updateModelContext(
+            { structuredContent: { worksheetContext: context } },
+            { timeout: 3000 },
+          )
+        }
+      } catch {
+        // Existing tool-result context preserves routing when optional context updates fail.
+      }
       const result = await app.sendMessage({
         role: 'user',
         content: [
           {
             type: 'text',
-            text: planRequest(plan, toolNames.meeting_plan, facetBridge),
+            text: planRequest(plan, Boolean(facetBridge)),
           },
         ],
       })
@@ -212,7 +244,7 @@ export async function connectBridge(
 }
 
 /** Preserve user-authored meeting identity in the host request. @param plan Current worksheet. @returns Assistant instruction and meeting content. */
-export function planRequest(
+export function planModelContext(
   plan: Plan,
   tool = 'meeting_plan',
   bridge?: FacetBridge,
@@ -224,6 +256,11 @@ export function planRequest(
     ? ` Call ${bridge.tool} with {"tool":"meeting_plan","arguments":<input matching this original schema>}. Original schema: ${JSON.stringify(operation?.inputSchema)}.`
     : ''
   return `Turn these meeting notes into an action plan using ${bridge?.tool ?? tool}.${routing} Preserve this exact meeting title and the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
+}
+
+/** Ask for a plan without exposing transport details in user chat. @param plan User-authored meeting. @param installed Whether a verified Studio bridge opened this worksheet. @returns Natural-language request. */
+export function planRequest(plan: Plan, installed = false): string {
+  return `Please turn these notes into an action plan in ${installed ? 'this installed Meeting to Action worksheet opened through Facet Studio' : 'this Meeting to Action worksheet'}. Preserve the meeting title and notes. Only use owners and dates stated in the notes; leave anything unknown blank. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
 }
 
 /** Deliver host state and open review only for a populated host proposal. @param agent State adapter. @param value Untrusted host plan. @param reviewed Review navigation callback. @returns State delivery completion. */
