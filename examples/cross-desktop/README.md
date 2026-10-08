@@ -8,6 +8,8 @@ The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit re
 
 Studio source 0.1.4 replaces the bundled local catalogue with real registry access. The supported app allowlist currently contains Meeting to Action; other registry packages are not offered for installation by this prototype. The CLI owns OAuth refresh and credentials, which never enter the MCP result or UI.
 
+Studio 0.1.5 carries connected-workflow precedence in its packaged skill, search-tool description and MCP server instructions. For interactive facet discovery, the host should discover and call Studio before CLI or shell authentication probes. A sandbox failure does not establish the connected service's authentication state; private discovery must not fall back to public web search. Existing globally installed Agent Facets skills also need this routing guidance: updating the Studio package does not replace or override unrelated global skills or host instructions. Reconnect the server and start a fresh chat to load updated MCP guidance.
+
 ## Recording
 
 Historical 0.1.2 local-catalogue recording: 40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
@@ -18,11 +20,11 @@ Historical 0.1.2 local-catalogue recording: 40-second animated walkthrough assem
 
 ## Registry packages
 
-Sign in with an account granted access to @agentfacets. After the Studio 0.1.4 release is published:
+Sign in with an account granted access to @agentfacets. After the Studio 0.1.5 release is published:
 
 ```sh
 facet login
-facet add @agentfacets/facet-studio@0.1.4
+facet add @agentfacets/facet-studio@0.1.5
 ```
 
 The UI searches actual CLI registry results, displays their exact version, and installs that approved version. Meeting to Action has its own [source repository](https://github.com/agent-facets/meeting-to-action) and [registry package](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Its standalone release is 0.1.3; search uses the version currently returned by the registry rather than assuming a version. [Studio registry package](https://agentfacets.io/facets/@agentfacets/facet-studio).

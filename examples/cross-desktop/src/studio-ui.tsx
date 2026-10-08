@@ -143,7 +143,7 @@ function Studio() {
         alive.current = false
       }
     }
-    const app = new App({ name: 'Facet Studio', version: '0.1.4' }, {})
+    const app = new App({ name: 'Facet Studio', version: '0.1.5' }, {})
     appRef.current = app
     app.ontoolinput = (input) => {
       if (!alive.current) return

@@ -36,11 +36,16 @@ const uiMeta = {
   ui: { resourceUri: studioUri },
   [RESOURCE_URI_META_KEY]: studioUri,
 }
+const discoveryRouting =
+  'For finding, recommending, installing or opening an interactive facet, use the connected Studio workflow first. If tool availability is uncertain, use the host tool-discovery mechanism to find studio_search, including host-prefixed names, before choosing a CLI fallback. Call studio_search with the user task and constraints before shell discovery, CLI authentication probes or public web searches. A shell sandbox or credential-access failure does not establish the connected Studio service authentication or private package availability. If Studio reports authentication or access failure, report that result and use its available studio_setup flow; never substitute public web search for private package discovery or request/expose tokens. Keep installation selection and approval in the inline Studio app, then use its returned Open action. CLI authoring, publishing, dependency maintenance and explicit CLI requests remain CLI workflows. Package guidance does not override host or global instructions.'
+
 const staticTools: Tool[] = [
   {
     name: 'studio_search',
     title: 'Discover registry facets',
     description:
+      discoveryRouting +
+      ' ' +
       'Find an interactive workflow for the user’s knowledge-work task. Proactively use this when someone asks to organize meeting notes, capture decisions, assign owners, or track follow-ups, even if they have not mentioned tools or Studio. Derive concise task keywords from their context, pass them as query, and show the matching inline card. Example: “Can you help me organize my meeting notes?” becomes query “meeting notes actions”. This searches the authenticated @agentfacets registry through the Facet CLI and shows supported app packages, currently Meeting to Action. Search does not install anything.',
     inputSchema: {
       type: 'object',
@@ -160,13 +165,15 @@ export async function createStudio(options: {
   const apps = new Map<string, AppProxy>()
   const pending = new Map<string, Promise<AppProxy>>()
   const server = new Server(
-    { name: 'facet-studio', version: '0.1.4' },
+    { name: 'facet-studio', version: '0.1.5' },
     {
       capabilities: {
         tools: { listChanged: true },
         resources: { listChanged: true },
       },
       instructions:
+        discoveryRouting +
+        ' ' +
         'When a user asks for help with knowledge work, look for a matching interactive workflow without requiring them to name Studio or a tool. For example, “Can you help me organize my meeting notes?” should lead to studio_search with concise query keywords such as “meeting notes actions”. Use task nouns and useful synonyms from their context, not generic filler such as help or organize. The first search call carries this context and prefills the inline search field. Show relevant results and let the user choose; never auto-install. This prototype searches the authenticated @agentfacets registry through the existing CLI OAuth session and currently supports the Meeting to Action app. Results use published versions; no Meeting UI or server is bundled in Studio. Stable app bridge tools are intentionally advertised before installation and do not prove installed status; trust search item.installed. After explicit approved installation, use returned app.openTool in the same connection without a per-facet restart.',
     },
   )

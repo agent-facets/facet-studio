@@ -116,7 +116,7 @@ export class AppProxy {
   ): Promise<AppProxy> {
     const client = new Client({
       name: 'facet-studio-app-proxy',
-      version: '0.1.4',
+      version: '0.1.5',
     })
     const transport = new StdioClientTransport({
       command: process.execPath,

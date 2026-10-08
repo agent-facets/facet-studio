@@ -163,7 +163,7 @@ Key files, relative to this directory:
 
 After the corresponding releases are published, both packages require organization access. Meeting to Action is maintained in its own [repository](https://github.com/agent-facets/meeting-to-action):
 
-- [@agentfacets/facet-studio 0.1.4](https://agentfacets.io/facets/@agentfacets/facet-studio)
+- [@agentfacets/facet-studio 0.1.5](https://agentfacets.io/facets/@agentfacets/facet-studio)
 - [@agentfacets/meeting-to-action 0.1.3](https://agentfacets.io/facets/@agentfacets/meeting-to-action)
 
 The source setup above is the simplest reproducible route. To demonstrate package travel separately, use a fresh project with your normal Facet home:
@@ -171,7 +171,7 @@ The source setup above is the simplest reproducible route. To demonstrate packag
 ```sh
 export FACET_PACKAGE_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-package-demo.XXXXXX")"
 cd "$FACET_PACKAGE_PROJECT"
-facet add @agentfacets/facet-studio@0.1.4
+facet add @agentfacets/facet-studio@0.1.5
 # Optional independent meeting package:
 facet add @agentfacets/meeting-to-action@0.1.3
 ```

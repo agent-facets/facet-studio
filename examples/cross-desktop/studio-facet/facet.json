@@ -1,11 +1,11 @@
 {
   "name": "@agentfacets/facet-studio",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Discover authenticated registry facets and install their packaged apps through one MCP connection.",
   "skills": {
     "facet-studio": {
-      "description": "Search @agentfacets registry apps and open their verified installations.",
+      "description": "Use connected Studio search before CLI discovery for interactive facets; approve registry installation and open the downloaded app.",
       "files": [
         "app.json",
         "assets/studio-server.js",
