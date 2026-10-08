@@ -4,6 +4,19 @@ A Bun prototype that discovers and installs facets, then opens their packaged ap
 
 The host assistant supplies reasoning. The installed meeting app uses CopilotKit React with AG-UI state. No separate model API or model credential is used.
 
+## Private registry packages
+
+The release manifests prepare `@agentfacets/facet-studio@0.1.0` and `@agentfacets/meeting-to-action@0.1.0` with `private: true`. Publication and registry access are separate from local build verification. Once these versions are published, sign in with an account that has access to the `@agentfacets` scope, then install the selected package in a consuming project:
+
+```sh
+facet login
+facet add @agentfacets/facet-studio@0.1.0
+# Optional direct worksheet package:
+facet add @agentfacets/meeting-to-action@0.1.0
+```
+
+Studio still ships an explicitly local catalogue containing the meeting package. Its discovery screen installs that bundled source through the real CLI; it does not claim registry search. The unscoped app descriptor IDs and companion directory names remain stable routing identities, separate from scoped registry package names. Both packages carry their own server/UI assets; Studio also carries the complete meeting source fixture.
+
 ## Discover, install and open in one host
 
 ```sh

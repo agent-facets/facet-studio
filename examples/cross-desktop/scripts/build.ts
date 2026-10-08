@@ -2,6 +2,7 @@ import { mkdir, copyFile } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import manifest from '../facet/facet.json'
 import studioManifest from '../studio-facet/facet.json'
+import meetingDescriptor from '../facet/skills/meeting-to-action/app.json'
 
 const root = resolve(import.meta.dir, '..')
 await mkdir(resolve(root, 'dist'), { recursive: true })
@@ -58,7 +59,7 @@ const studio = await Bun.build({
   minify: true,
 })
 if (!studio.success) throw new Error(studio.logs.join('\n'))
-const catalogRoot = resolve(root, 'dist/catalogue', manifest.name)
+const catalogRoot = resolve(root, 'dist/catalogue', meetingDescriptor.id)
 await mkdir(catalogRoot, { recursive: true })
 await copyFile(
   resolve(root, 'facet/facet.json'),
@@ -77,9 +78,9 @@ await Bun.write(
     {
       entries: [
         {
-          id: manifest.name,
+          id: meetingDescriptor.id,
           source: 'local',
-          path: `catalogue/${manifest.name}`,
+          path: `catalogue/${meetingDescriptor.id}`,
         },
       ],
     },

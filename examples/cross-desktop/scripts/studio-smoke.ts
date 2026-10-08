@@ -204,7 +204,7 @@ const project = await mkdtemp(join(tmpdir(), 'studio-portable-install-'))
 const sourcePath = resolve(root, 'studio-facet')
 await installLocalFacet(sourcePath, project)
 const entry: CatalogEntry = {
-  id: studioManifest.name,
+  id: studioDescriptor.id,
   name: studioManifest.name,
   version: studioManifest.version,
   description: studioManifest.description,
