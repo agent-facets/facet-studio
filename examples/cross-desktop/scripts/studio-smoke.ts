@@ -17,6 +17,7 @@ import {
 import studioManifest from '../studio-facet/facet.json'
 import studioDescriptor from '../studio-facet/skills/facet-studio/app.json'
 import { samplePlan } from '../src/model'
+import { stableTool, stableResource } from '../src/studio-server'
 
 const root = resolve(import.meta.dir, '..')
 const InstallResult = type({
@@ -58,8 +59,26 @@ async function checkStudio(
   )
   try {
     const before = await client.listTools()
-    if (before.tools.length !== 3)
-      throw new Error('Fresh Studio must expose exactly three static tools.')
+    if (before.tools.length !== 4)
+      throw new Error(
+        'Fresh Studio must expose three Studio tools and one predeclared bridge.',
+      )
+    const cachedOpen = before.tools.find(
+      (tool) => tool.name === stableTool('meeting-to-action'),
+    )
+    if (!cachedOpen)
+      throw new Error('Bridge absent from initial cached tool list.')
+    if (
+      !(await client.callTool({ name: cachedOpen.name, arguments: {} })).isError
+    )
+      throw new Error('Uninstalled bridge was callable.')
+    let refused = false
+    try {
+      await client.readResource({ uri: stableResource('meeting-to-action') })
+    } catch {
+      refused = true
+    }
+    if (!refused) throw new Error('Uninstalled primary resource was served.')
     const search = await client.callTool({
       name: 'studio_search',
       arguments: { query: 'meeting' },
@@ -78,31 +97,26 @@ async function checkStudio(
     const result = InstallResult(installation.structuredContent)
     if (installation.isError || result instanceof type.errors)
       throw new Error(`Install failed: ${JSON.stringify(installation)}`)
-    const after = await client.listTools()
-    if (
-      toolChanges < 1 ||
-      resourceChanges < 1 ||
-      after.tools.length !== 7 ||
-      !after.tools.some((tool) => tool.name === result.app.openTool)
-    )
-      throw new Error(
-        'Studio did not notify and publish installed capabilities.',
-      )
     const opened = await client.callTool({
-      name: result.app.openTool,
+      name: cachedOpen.name,
       arguments: {},
     })
-    if (opened.isError || !opened._meta?.facetToolNames)
-      throw new Error('Installed app open result omitted routing metadata.')
+    if (opened.isError || !opened._meta?.facetBridge)
+      throw new Error(
+        `Installed app open result omitted routing metadata: ${JSON.stringify(opened)}`,
+      )
     const planTool = result.app.toolNames.meeting_plan
     if (!planTool) throw new Error('Missing namespaced plan tool.')
     const hostPlan = await client.callTool({
-      name: planTool,
+      name: cachedOpen.name,
       arguments: {
-        plan: {
-          ...samplePlan,
-          title: 'Portable Studio round trip',
-          source: 'host',
+        tool: 'meeting_plan',
+        arguments: {
+          plan: {
+            ...samplePlan,
+            title: 'Portable Studio round trip',
+            source: 'host',
+          },
         },
       },
     })
@@ -113,6 +127,35 @@ async function checkStudio(
       )
     )
       throw new Error('Namespaced host plan failed.')
+    const after = await client.listTools()
+    if (
+      toolChanges < 1 ||
+      resourceChanges < 1 ||
+      after.tools.length !== 8 ||
+      !after.tools.some((tool) => tool.name === result.app.openTool)
+    )
+      throw new Error(
+        'Studio did not notify and publish installed capabilities.',
+      )
+    for (const argumentsValue of [
+      { tool: 'unknown' },
+      { tool: 'meeting_plan', arguments: { plan: {} } },
+      { tool: 'meeting_plan', arguments: [] },
+      { other: true },
+    ]) {
+      if (
+        !(
+          await client.callTool({
+            name: cachedOpen.name,
+            arguments: argumentsValue,
+          })
+        ).isError
+      )
+        throw new Error('Bridge accepted unknown operation or invalid input.')
+    }
+    const primary = await client.readResource({
+      uri: stableResource('meeting-to-action'),
+    })
     const resources = await client.listResources()
     const appResource = resources.resources.find((resource) =>
       resource.uri.startsWith('ui://facet-studio/apps/'),
@@ -127,6 +170,21 @@ async function checkStudio(
       )
     )
       throw new Error('Installed UI could not be read.')
+    if (
+      JSON.stringify(
+        primary.contents.map((content) =>
+          'text' in content ? content.text : '',
+        ),
+      ) !==
+      JSON.stringify(
+        resource.contents.map((content) =>
+          'text' in content ? content.text : '',
+        ),
+      )
+    )
+      throw new Error(
+        'Stable primary resource differs from installed app HTML.',
+      )
     const invalid = await client.callTool({
       name: 'studio_install',
       arguments: { id: '../../arbitrary' },
@@ -134,7 +192,7 @@ async function checkStudio(
     if (!invalid.isError)
       throw new Error('Unknown catalogue installation was accepted.')
     console.log(
-      `PASS: Studio search → real install → list_changed (${toolChanges} tools, ${resourceChanges} resources) → namespaced app open/plan/resource; project ${project}`,
+      `PASS: Studio search → real install → list_changed (${toolChanges} tools, ${resourceChanges} resources) → cached stable bridge open/plan/resource (no refreshed tools needed); project ${project}`,
     )
   } finally {
     await client.close()
@@ -185,6 +243,11 @@ for (const id of ['first-app', 'second-app']) {
     join(source, 'skills/meeting-to-action'),
     join(source, 'skills', id),
   )
+  const viewPath = join(source, 'skills', id, 'assets/view.html')
+  await Bun.write(
+    viewPath,
+    (await Bun.file(viewPath).text()) + `<!-- isolation:${id} -->`,
+  )
   const descriptorPath = join(source, 'skills', id, 'app.json')
   const descriptor = parseDescriptor(await Bun.file(descriptorPath).json())
   await Bun.write(descriptorPath, JSON.stringify({ ...descriptor, id }))
@@ -228,10 +291,30 @@ try {
   ).json()) as { facets: Record<string, unknown> }
   if (!entries.every((entry) => entry.id in lock.facets))
     throw new Error('Concurrent installation lost a lockfile entry.')
-  if ((await concurrentClient.listTools()).tools.length !== 11)
+  if ((await concurrentClient.listTools()).tools.length !== 13)
     throw new Error('Concurrent app capabilities were lost.')
+  for (const id of ['first-app', 'second-app', 'first-app']) {
+    const opened = await concurrentClient.callTool({
+      name: stableTool(id),
+      arguments: {},
+    })
+    if (opened.isError) throw new Error('Concurrent primary app open failed.')
+    const view = await concurrentClient.readResource({
+      uri: stableResource(id),
+    })
+    const html = view.contents
+      .map((content) => ('text' in content ? content.text : ''))
+      .join('')
+    if (
+      !html.includes(`isolation:${id}`) ||
+      html.includes(
+        `isolation:${id === 'first-app' ? 'second-app' : 'first-app'}`,
+      )
+    )
+      throw new Error('Primary UI resource identity leaked across apps.')
+  }
   console.log(
-    'PASS: concurrent distinct catalogue installs retain both CLI lock entries and publish both app tool sets.',
+    'PASS: concurrent distinct catalogue installs retain both CLI lock entries and publish both app tool sets; interleaved primary resources remain isolated.',
   )
 } finally {
   await concurrentClient.close()

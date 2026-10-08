@@ -14,10 +14,11 @@ import {
 } from '@modelcontextprotocol/ext-apps/server'
 import { type } from 'arktype'
 import { resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 import { createCliSetup } from '../../../mcp/src/cli-setup'
 import { loadCatalog, findInstalledApp, type CatalogEntry } from './catalog'
 import { installLocalFacet } from './install'
-import { AppProxy } from './app-proxy'
+import { AppProxy, bounded } from './app-proxy'
 
 const studioUri = 'ui://facet-studio/catalog.html'
 const SearchSchema = type({ 'query?': 'string <= 200' })
@@ -75,6 +76,41 @@ const staticTools: Tool[] = [
   },
 ]
 
+/** Name a predeclared bridge independently of child capabilities. @param id Catalogue identity. @returns Stable host tool name. */
+export function stableTool(id: string): string {
+  return `studio_app_${createHash('sha256').update(id).digest('hex').slice(0, 16)}`
+}
+
+/** Bind an installed app's primary view without mutable selection state. @param id Catalogue identity. @returns Stable resource URI. */
+export function stableResource(id: string): string {
+  return `ui://facet-studio/installed/${id}.html`
+}
+
+const BridgeInput = type({
+  'tool?': 'string <= 128',
+  'arguments?': 'object',
+  '+': 'reject',
+})
+
+/** Declare a cache-compatible wrapper without starting uninstalled code. @param entry Trusted catalogue metadata. @returns Static wrapper definition. */
+function bridgeTool(entry: CatalogEntry): Tool {
+  const uri = stableResource(entry.id)
+  return {
+    name: stableTool(entry.id),
+    title: `Open ${entry.name}`,
+    description: `Open the installed ${entry.name} app with {}. Only works after installation. To use an app operation, pass {tool: original tool name, arguments: its input}. The open result supplies the original operation schemas; the child validates those inputs.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', maxLength: 128 },
+        arguments: { type: 'object' },
+      },
+      additionalProperties: false,
+    },
+    _meta: { ui: { resourceUri: uri }, [RESOURCE_URI_META_KEY]: uri },
+  }
+}
+
 /** Construct one connected Studio with a fixed catalogue and consuming project. @param options Trusted process configuration. @returns Raw MCP server with namespaced child capabilities. */
 export async function createStudio(options: {
   catalogFile: string
@@ -82,6 +118,12 @@ export async function createStudio(options: {
   html: string
 }): Promise<Server> {
   const entries = await loadCatalog(options.catalogFile)
+  const bridgeTools = entries.map(bridgeTool)
+  if (
+    new Set([...staticTools, ...bridgeTools].map((tool) => tool.name)).size !==
+    staticTools.length + bridgeTools.length
+  )
+    throw new Error('Catalogue bridge tool names collide.')
   const setup = createCliSetup()
   const apps = new Map<string, AppProxy>()
   const pending = new Map<string, Promise<AppProxy>>()
@@ -119,7 +161,7 @@ export async function createStudio(options: {
       version: entry.version,
       source: entry.source,
       installed: Boolean(app),
-      ...(app ? { openTool: app.openTool } : {}),
+      ...(app ? { openTool: stableTool(entry.id) } : {}),
     }
   }
 
@@ -145,6 +187,22 @@ export async function createStudio(options: {
       apps.delete(entry.id)
       void changed().catch(() => {})
     })
+    const occupied = new Set(
+      [
+        ...staticTools,
+        ...bridgeTools,
+        ...[...apps.entries()]
+          .filter(([id]) => id !== entry.id)
+          .flatMap(([, child]) => child.tools),
+      ].map((tool) => tool.name),
+    )
+    if (
+      app.tools.some((tool) => occupied.has(tool.name)) ||
+      new Set(app.tools.map((tool) => tool.name)).size !== app.tools.length
+    ) {
+      await app.close()
+      throw new Error('Installed app tool aliases collide.')
+    }
     if (closing) {
       await app.close()
       throw new Error('Studio is closing.')
@@ -178,7 +236,11 @@ export async function createStudio(options: {
   }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...staticTools, ...[...apps.values()].flatMap((app) => app.tools)],
+    tools: [
+      ...staticTools,
+      ...bridgeTools,
+      ...[...apps.values()].flatMap((app) => app.tools),
+    ],
   }))
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
@@ -187,6 +249,11 @@ export async function createStudio(options: {
         name: 'Facet Studio local catalogue',
         mimeType: RESOURCE_MIME_TYPE,
       },
+      ...entries.map((entry) => ({
+        uri: stableResource(entry.id),
+        name: entry.name,
+        mimeType: RESOURCE_MIME_TYPE,
+      })),
       ...[...apps.values()].flatMap((app) => app.resources),
     ],
   }))
@@ -206,6 +273,42 @@ export async function createStudio(options: {
             },
           ],
         }
+      const entry = entries.find(
+        (entry) => stableResource(entry.id) === request.params.uri,
+      )
+      if (entry) {
+        const installed = apps.get(entry.id)
+        if (!installed)
+          throw new Error('Install this local facet before opening its app.')
+        const open = installed.tools.find(
+          (tool) => tool.name === installed.openTool,
+        )
+        const uri = open?._meta?.[RESOURCE_URI_META_KEY]
+        if (typeof uri !== 'string')
+          throw new Error('The installed app has no primary UI resource.')
+        try {
+          const response = await installed.read(uri, extra.signal)
+          if (
+            response.contents.length !== 1 ||
+            !response.contents.every(
+              (content) =>
+                content.mimeType === RESOURCE_MIME_TYPE && 'text' in content,
+            )
+          )
+            throw new Error('Unsupported primary UI resource.')
+          return {
+            ...response,
+            contents: response.contents.map((content) => ({
+              ...content,
+              uri: request.params.uri,
+            })),
+          }
+        } catch {
+          throw new Error(
+            'The installed primary UI is unavailable. Reinstall the facet and retry.',
+          )
+        }
+      }
       const app = [...apps.values()].find((app) =>
         app.resources.some((resource) => resource.uri === request.params.uri),
       )
@@ -225,6 +328,58 @@ export async function createStudio(options: {
       try {
         const args = request.params.arguments ?? {}
         let result: Record<string, unknown>
+        const bridgedEntry = entries.find(
+          (entry) => stableTool(entry.id) === request.params.name,
+        )
+        if (bridgedEntry) {
+          const parsed = BridgeInput(args)
+          if (
+            parsed instanceof type.errors ||
+            (parsed.arguments !== undefined &&
+              (Array.isArray(parsed.arguments) || parsed.arguments === null))
+          )
+            throw new Error('Invalid app operation envelope.')
+          const app = apps.get(bridgedEntry.id)
+          if (!app) throw new Error('Install this facet before opening it.')
+          const original = parsed.tool ?? app.installed.descriptor.openTool
+          const alias = Object.hasOwn(app.toolNames, original)
+            ? app.toolNames[original]
+            : undefined
+          if (!alias) throw new Error('Unknown app operation.')
+          const tools = app.originalTools.map(
+            ({ name, description, inputSchema }) => ({
+              name,
+              description,
+              inputSchema,
+            }),
+          )
+          const schemaText = JSON.stringify(tools)
+          if (schemaText.length > 128 * 1024)
+            throw new Error('App operation schemas exceed the bridge limit.')
+          const result = await app.call(
+            alias,
+            (parsed.arguments ?? {}) as Record<string, unknown>,
+            extra.signal,
+          )
+          return bounded({
+            ...result,
+            content: [
+              ...result.content,
+              {
+                type: 'text',
+                text: `Installed app operations. Call ${stableTool(bridgedEntry.id)} with {"tool":"original name","arguments":{...}}. Original schemas (validated by the child): ${schemaText}`,
+              },
+            ],
+            _meta: {
+              ...result._meta,
+              facetBridge: {
+                tool: stableTool(bridgedEntry.id),
+                appId: app.installed.descriptor.id,
+                tools,
+              },
+            },
+          })
+        }
         if (request.params.name === 'studio_search') {
           const parsed = SearchSchema(args)
           if (parsed instanceof type.errors)
@@ -257,7 +412,7 @@ export async function createStudio(options: {
             item: item(entry),
             app: {
               id: app.installed.descriptor.id,
-              openTool: app.openTool,
+              openTool: stableTool(entry.id),
               toolNames: app.toolNames,
             },
           }

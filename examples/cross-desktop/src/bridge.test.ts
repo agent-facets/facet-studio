@@ -75,3 +75,93 @@ test('host bridge waits for routing metadata before its first server call', asyn
     await app.close()
   }
 })
+
+test('stable bridge validates metadata and routes UI calls and assistant requests exactly', async () => {
+  const { parseFacetBridge } = await import('./bridge')
+  const metadata = {
+    tool: 'studio_app_0123456789abcdef',
+    appId: 'meeting-to-action',
+    tools: [
+      {
+        name: 'meeting_plan',
+        inputSchema: { type: 'object', required: ['plan'] },
+      },
+    ],
+  }
+  expect(parseFacetBridge(metadata)).toEqual(metadata)
+  for (const value of [
+    { ...metadata, tool: 'bad' },
+    { ...metadata, tools: [...metadata.tools, ...metadata.tools] },
+    { ...metadata, tools: [{ name: 'bad/tool', inputSchema: {} }] },
+    { ...metadata, tools: [{ name: 'meeting_plan', inputSchema: [] }] },
+  ])
+    expect(() => parseFacetBridge(value)).toThrow()
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { parent: {} },
+  })
+  const app = new App({ name: 'test', version: '1' }, {})
+  app.connect = async () => {}
+  const calls: unknown[] = []
+  let prompt = ''
+  app.callServerTool = async (params) => {
+    calls.push(params)
+    return { content: [], structuredContent: { plan: samplePlan } }
+  }
+  app.sendMessage = async (params) => {
+    prompt = JSON.stringify(params.content)
+    return {}
+  }
+  try {
+    const pending = connectBridge(
+      new MeetingAgent(),
+      () => {},
+      () => {},
+      () => {},
+      () => app,
+    )
+    app.ontoolresult?.({
+      content: [],
+      structuredContent: { plan: samplePlan },
+      _meta: { facetBridge: metadata },
+    })
+    const bridge = await pending
+    await bridge.call('meeting_plan', { plan: samplePlan })
+    expect(calls).toEqual([
+      {
+        name: metadata.tool,
+        arguments: { tool: 'meeting_plan', arguments: { plan: samplePlan } },
+      },
+    ])
+    await expect(bridge.call('unknown')).rejects.toThrow('does not expose')
+    await bridge.request(samplePlan)
+    expect(prompt).toContain(metadata.tool)
+    expect(prompt).toContain('meeting_plan')
+    expect(prompt).toContain('Original schema')
+    expect(planRequest(samplePlan, undefined, metadata)).toContain(
+      '"tool":"meeting_plan","arguments":',
+    )
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+    await app.close()
+  }
+})
+
+test('bridge metadata accepts the same exact schema-size boundary as the proxy', async () => {
+  const { parseFacetBridge } = await import('./bridge')
+  const tools = [
+    { name: 'meeting_plan', description: '', inputSchema: { type: 'object' } },
+  ]
+  tools[0]!.description = 'x'.repeat(128 * 1024 - JSON.stringify(tools).length)
+  const metadata = {
+    tool: 'studio_app_0123456789abcdef',
+    appId: 'meeting-to-action',
+    tools,
+  }
+  expect(JSON.stringify(tools).length).toBe(128 * 1024)
+  expect(parseFacetBridge(metadata).tools).toEqual(tools)
+  tools[0]!.description += 'x'
+  expect(() => parseFacetBridge(metadata)).toThrow()
+})

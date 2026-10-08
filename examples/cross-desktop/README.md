@@ -25,11 +25,13 @@ facet build facet --verify
 bun scripts/studio-smoke.ts
 ```
 
-The Studio smoke gate installs both bundles with the real CLI, launches installed Studio from `/tmp`, verifies the bundled sample starts uninstalled even when Studio is installed in that same consuming project, then verifies search, install, tool/resource list-change notifications, namespaced app opening, host plan updates and UI reads. It also checks concurrent installs of two distinct local entries preserve both lock records.
+The Studio smoke gate installs both bundles with the real CLI, launches installed Studio from `/tmp`, verifies the bundled sample starts uninstalled even when Studio is installed in that same consuming project, then verifies search, install, tool/resource list-change notifications, cached stable-tool app opening, host plan updates and UI reads before refreshing the tool list. It also checks concurrent installs of two distinct local entries preserve both lock records and keep their primary UI resources isolated.
 
 The small `app.json` contract is a prototype skill companion, not a new Facet manifest field. It declares schemaVersion, app ID, version, Bun runtime, relative JavaScript entrypoint and open tool. Studio requires matching Facet lock identity and companion hashes before starting an app. Adapter-transformed SKILL.md is checked against the source hash in the CLI lock; executable/UI companions must match installed bytes. App IDs are unique in a catalogue, tools/resources are namespaced, and child/tool startup and CLI work are bounded and cancelled on disconnect.
 
-Native verification of this new discovery path is pending. The prior directly connected meeting worksheet's Claude evidence below does not establish dynamic Studio tool support.
+Studio predeclares one generic `studio_app_<hash>` tool per configured catalogue entry. Calling it with `{}` opens that installed app; `{"tool":"original child name","arguments":{...}}` invokes an allowlisted child operation. Original schemas appear in the open result for the assistant and are validated by the child. The wrapper itself has a generic host input schema; dynamic tools still retain their original schemas. The installed UI uses routing metadata to send both UI calls and assistant requests through the predeclared tool. Browser and direct standalone routing remain supported.
+
+Each bridge has a distinct stable primary-resource URI bound to the descriptor's open tool. Resource reads and calls fail before verified installation; source assets are never served as installed apps. This prototype supports one primary UI per app and a fixed catalogue at connection startup. Native Claude rendered discovery and completed installation but did not refresh its tool list after receiving list-change notifications. The stable bridge avoids that dependency. Native proof that the host retries a resource read after installation, without a restart, remains pending; the protocol gate alone does not establish that host behavior.
 
 ## Run the browser preview
 

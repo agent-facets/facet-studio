@@ -26,6 +26,39 @@ export function parseSetup(value: unknown): SetupStatus {
     throw new Error('Setup returned an unexpected authorization address.')
   return result
 }
+const FacetBridgeSchema = type({
+  tool: 'string',
+  appId: 'string',
+  tools: type({
+    name: 'string',
+    'description?': 'string',
+    inputSchema: 'object',
+  }).array(),
+})
+export type FacetBridge = typeof FacetBridgeSchema.infer
+
+/** Validate optional cache-compatible routing before using any tool. @param value Host metadata. @returns Validated routing. */
+export function parseFacetBridge(value: unknown): FacetBridge {
+  const result = FacetBridgeSchema(value)
+  if (
+    result instanceof type.errors ||
+    !/^studio_app_[a-f0-9]{16}$/.test(result.tool) ||
+    !/^[a-z][a-z0-9-]{0,47}$/.test(result.appId) ||
+    result.tools.length < 1 ||
+    result.tools.length > 40 ||
+    new Set(result.tools.map((tool) => tool.name)).size !==
+      result.tools.length ||
+    result.tools.some(
+      (tool) =>
+        !/^[A-Za-z0-9_.-]{1,128}$/.test(tool.name) ||
+        Array.isArray(tool.inputSchema),
+    ) ||
+    JSON.stringify(result.tools).length > 128 * 1024
+  )
+    throw new Error('The installed app bridge metadata is invalid.')
+  return result
+}
+
 export type Bridge = {
   connected: boolean
   call: (
@@ -74,6 +107,7 @@ export async function connectBridge(
     return bridge
   }
   let toolNames: Record<string, string> = {}
+  let facetBridge: FacetBridge | undefined
   const app = createApp()
   const initial = Promise.withResolvers<void>()
   const initialTimer = setTimeout(
@@ -86,6 +120,15 @@ export async function connectBridge(
     15000,
   )
   app.ontoolresult = (result) => {
+    if (result._meta?.facetBridge !== undefined) {
+      try {
+        facetBridge = parseFacetBridge(result._meta.facetBridge)
+      } catch (error) {
+        initial.reject(error)
+        failed('The installed app routing is invalid. Reopen the app.')
+        return
+      }
+    }
     const mapping = result._meta?.facetToolNames
     if (mapping !== undefined) {
       const parsed = type({ '[string]': 'string' })(mapping)
@@ -136,9 +179,11 @@ export async function connectBridge(
   const bridge: Bridge = {
     connected: true,
     async call(name, args = {}) {
+      if (facetBridge && !facetBridge.tools.some((tool) => tool.name === name))
+        throw new Error('The installed app does not expose this operation.')
       const result = await app.callServerTool({
-        name: toolNames[name] ?? name,
-        arguments: args,
+        name: facetBridge?.tool ?? toolNames[name] ?? name,
+        arguments: facetBridge ? { tool: name, arguments: args } : args,
       })
       if (result.isError)
         throw new Error(
@@ -152,7 +197,7 @@ export async function connectBridge(
         content: [
           {
             type: 'text',
-            text: planRequest(plan, toolNames.meeting_plan),
+            text: planRequest(plan, toolNames.meeting_plan, facetBridge),
           },
         ],
       })
@@ -167,8 +212,18 @@ export async function connectBridge(
 }
 
 /** Preserve user-authored meeting identity in the host request. @param plan Current worksheet. @returns Assistant instruction and meeting content. */
-export function planRequest(plan: Plan, tool = 'meeting_plan'): string {
-  return `Turn these meeting notes into an action plan using ${tool}. Preserve this exact meeting title and the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
+export function planRequest(
+  plan: Plan,
+  tool = 'meeting_plan',
+  bridge?: FacetBridge,
+): string {
+  const operation = bridge?.tools.find((entry) => entry.name === 'meeting_plan')
+  if (bridge && !operation)
+    throw new Error('The installed app has no planning operation.')
+  const routing = bridge
+    ? ` Call ${bridge.tool} with {"tool":"meeting_plan","arguments":<input matching this original schema>}. Original schema: ${JSON.stringify(operation?.inputSchema)}.`
+    : ''
+  return `Turn these meeting notes into an action plan using ${bridge?.tool ?? tool}.${routing} Preserve this exact meeting title and the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
 }
 
 /** Deliver host state and open review only for a populated host proposal. @param agent State adapter. @param value Untrusted host plan. @param reviewed Review navigation callback. @returns State delivery completion. */

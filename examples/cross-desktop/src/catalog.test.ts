@@ -244,3 +244,98 @@ test('partial Studio initialization closes an already-started child', async () =
     start.mockRestore()
   }
 })
+
+test('predeclared bridge refuses uninstalled calls and resources without starting child code', async () => {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+  const { InMemoryTransport } = await import(
+    '@modelcontextprotocol/sdk/inMemory.js'
+  )
+  const { createStudio, stableTool, stableResource } = await import(
+    './studio-server'
+  )
+  const { AppProxy } = await import('./app-proxy')
+  const { spyOn } = await import('bun:test')
+  const fixture = await mkdtemp(join(tmpdir(), 'studio-uninstalled-'))
+  const source = join(fixture, 'source')
+  const skill = join(source, 'skills/test-app')
+  await mkdir(join(skill, 'assets'), { recursive: true })
+  await Bun.write(join(skill, 'SKILL.md'), '# Fixture')
+  await Bun.write(join(skill, 'app.json'), JSON.stringify(descriptor))
+  await Bun.write(
+    join(skill, 'assets/server.js'),
+    'throw new Error("must not execute")',
+  )
+  await Bun.write(
+    join(source, 'facet.json'),
+    JSON.stringify({
+      name: 'test-app',
+      version: '1.0.0',
+      skills: { 'test-app': { files: ['app.json', 'assets/server.js'] } },
+    }),
+  )
+  const catalogFile = join(fixture, 'catalog.json')
+  await Bun.write(
+    catalogFile,
+    JSON.stringify({
+      entries: [{ id: 'test-app', source: 'local', path: 'source' }],
+    }),
+  )
+  const start = spyOn(AppProxy, 'start')
+  const server = await createStudio({
+    catalogFile,
+    project: join(fixture, 'project'),
+    html: '<html></html>',
+  })
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: 'test', version: '1' })
+  await server.connect(serverTransport)
+  await client.connect(clientTransport)
+  try {
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain(
+      stableTool('test-app'),
+    )
+    expect(
+      (await client.callTool({ name: stableTool('test-app'), arguments: {} }))
+        .isError,
+    ).toBe(true)
+    await expect(
+      client.readResource({ uri: stableResource('test-app') }),
+    ).rejects.toThrow()
+    expect(start).not.toHaveBeenCalled()
+  } finally {
+    await client.close()
+    await server.close()
+    start.mockRestore()
+  }
+})
+
+test('oversized bridge schemas fail activation before any operation and combined responses remain bounded', async () => {
+  const { AppProxy, bounded } = await import('./app-proxy')
+  const fixture = await mkdtemp(join(tmpdir(), 'studio-schema-bound-'))
+  const marker = join(fixture, 'operation')
+  const entrypoint = join(fixture, 'server.js')
+  await Bun.write(
+    entrypoint,
+    `import {createInterface} from 'node:readline'; const lines=createInterface({input:process.stdin}); lines.on('line',async line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:'2025-03-26',capabilities:{tools:{},resources:{}},serverInfo:{name:'fixture',version:'1'}};if(m.method==='tools/list')result={tools:[{name:'open',description:'x'.repeat(128*1024),inputSchema:{type:'object'}}]};if(m.method==='resources/list')result={resources:[]};if(m.method==='tools/call'){await Bun.write(${JSON.stringify(marker)},'called');result={content:[]}}process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')});`,
+  )
+  await expect(
+    AppProxy.start(
+      {
+        descriptor: parseDescriptor(descriptor),
+        root: fixture,
+        entrypoint,
+        fingerprint: 'fixture',
+      },
+      () => {},
+    ),
+  ).rejects.toThrow('could not start')
+  expect(await Bun.file(marker).exists()).toBe(false)
+  const child = {
+    content: [{ type: 'text', text: 'x'.repeat(4 * 1024 * 1024 - 100) }],
+  }
+  expect(bounded(child)).toBe(child)
+  expect(() =>
+    bounded({ ...child, _meta: { schema: 'x'.repeat(200) } }),
+  ).toThrow('size limit')
+})

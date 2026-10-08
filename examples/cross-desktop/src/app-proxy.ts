@@ -26,7 +26,7 @@ function resourceAlias(id: string, uri: string): string {
 }
 
 /** Restrict child response size before returning data to the host. @param value Protocol response. @returns The bounded response. */
-function bounded<T>(value: T): T {
+export function bounded<T>(value: T): T {
   if (JSON.stringify(value).length > 4 * 1024 * 1024)
     throw new Error('The app response exceeds the prototype size limit.')
   return value
@@ -58,6 +58,7 @@ function appMetadata(
 
 /** Proxy the capabilities of one byte-verified local app without changing their JSON schemas. */
 export class AppProxy {
+  readonly originalTools: Tool[]
   readonly tools: Tool[]
   readonly resources: Resource[]
   readonly toolNames: Record<string, string>
@@ -71,6 +72,18 @@ export class AppProxy {
     tools: Tool[],
     resources: Resource[],
   ) {
+    this.originalTools = tools
+    if (
+      JSON.stringify(
+        tools.map(({ name, description, inputSchema }) => ({
+          name,
+          description,
+          inputSchema,
+        })),
+      ).length >
+      128 * 1024
+    )
+      throw new Error('App operation schemas exceed the bridge limit.')
     this.toolNames = Object.fromEntries(
       tools.map((tool) => [
         tool.name,
