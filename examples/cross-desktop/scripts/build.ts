@@ -25,6 +25,7 @@ const server = await Bun.build({
   minify: true,
 })
 if (!server.success) throw new Error(server.logs.join('\n'))
+await mkdir(resolve(root, 'facet/skills/meeting-to-action/assets'), { recursive: true })
 for (const file of ['server.js', 'view.html'])
   await copyFile(
     resolve(root, 'dist', file),
