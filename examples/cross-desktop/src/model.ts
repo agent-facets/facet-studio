@@ -17,6 +17,7 @@ export const PlanSchema = type({
     .array()
     .atMostLength(100),
   source: "'empty' | 'sample' | 'host' | 'edited'",
+  'edited?': 'boolean',
 })
 export type Plan = typeof PlanSchema.infer
 export const emptyPlan: Plan = {
@@ -74,4 +75,14 @@ export function parsePlan(value: unknown): Plan {
 /** Export user-reviewed content. @param plan Current plan. @returns Portable Markdown. */
 export function markdown(plan: Plan): string {
   return `# ${plan.title}\n\n## Decisions\n${plan.decisions || 'No decisions recorded.'}\n\n## Actions\n${plan.actions.map((action) => `- [${action.done ? 'x' : ' '}] ${action.task} · ${action.owner || 'Unassigned'} · ${action.due || 'No date'}`).join('\n') || 'No actions recorded.'}\n\n## Source notes\n${plan.notes}\n`
+}
+
+/** Preserve provenance while applying user edits. @param plan Current worksheet. @param patch Changed fields. @returns Edited worksheet with its original source. */
+export function editPlan(plan: Plan, patch: Partial<Plan>): Plan {
+  return {
+    ...plan,
+    ...patch,
+    source: plan.source === 'empty' ? 'edited' : plan.source,
+    edited: true,
+  }
 }

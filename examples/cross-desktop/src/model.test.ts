@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { MeetingAgent } from './agent'
-import { markdown, parsePlan, samplePlan } from './model'
+import { editPlan, markdown, parsePlan, samplePlan } from './model'
 import { handleRequest } from './server'
 
 test('host snapshots update AG-UI state and reject invalid inputs', async () => {
@@ -58,4 +58,11 @@ test('browser rejects cross-origin mutation and unknown capabilities', async () 
       )
     ).status,
   ).toBe(400)
+})
+
+test('editing a sample preserves provenance through validation and export state', () => {
+  const edited = parsePlan(editPlan(samplePlan, { title: 'Edited example' }))
+  expect(edited.source).toBe('sample')
+  expect(edited.edited).toBe(true)
+  expect(edited.title).toBe('Edited example')
 })

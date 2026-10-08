@@ -18,7 +18,14 @@ import {
   type Bridge,
   type SetupStatus,
 } from './bridge'
-import { emptyPlan, markdown, parsePlan, samplePlan, type Plan } from './model'
+import {
+  emptyPlan,
+  editPlan,
+  markdown,
+  parsePlan,
+  samplePlan,
+  type Plan,
+} from './model'
 import './style.css'
 
 const meetingAgent = new MeetingAgent()
@@ -104,7 +111,7 @@ function Workspace() {
 
   /** Update CopilotKit state as the user edits. @param patch Changed fields. @returns Nothing. */
   function edit(patch: Partial<Plan>) {
-    agent.setState({ ...plan, ...patch, source: 'edited' })
+    agent.setState(editPlan(plan, patch))
   }
 
   /** Delegate setup to the CLI-owned service. @param action Explicit setup intent. @returns Completion. */
@@ -155,8 +162,7 @@ function Workspace() {
       <div className="workspace">
         <aside>
           <h1>
-            Meeting
-            <br />
+            Meeting <br />
             to Action
           </h1>
           <p>Turn the conversation into a plan you can use.</p>
@@ -376,7 +382,9 @@ function Workspace() {
                     {plan.source === 'host'
                       ? 'Assistant proposal · review before sharing'
                       : plan.source === 'sample'
-                        ? 'Illustrative sample · no AI used'
+                        ? plan.edited
+                          ? 'Edited sample · no AI used'
+                          : 'Illustrative sample · no AI used'
                         : 'Your editable worksheet'}
                   </p>
                 </div>

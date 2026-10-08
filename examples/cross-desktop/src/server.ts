@@ -43,6 +43,7 @@ const PlanInput = z.object({
     )
     .max(100),
   source: z.enum(['empty', 'sample', 'host', 'edited']),
+  edited: z.boolean().optional(),
 })
 
 /** Dispatch fixed capabilities across both transports. @param name Known tool name. @param args Untrusted input. @returns Validated state or setup response. */
