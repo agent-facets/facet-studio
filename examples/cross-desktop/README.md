@@ -16,6 +16,8 @@ The source discovery update is 0.1.2. It retains the query contract, adds intent
 
 [Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
 
+The Studio source 0.1.3 patch (with unchanged Meeting to Action 0.1.2) keeps the Open request in plain language and supplies operation routing through optional acknowledged model context. If the host cannot accept that context, the natural request relies on the installation result already in the conversation. Refresh the built Studio assets and reconnect before validating the patch; the published release and native evidence below remain 0.1.2 until updated.
+
 ## Private registry packages
 
 The private 0.1.2 releases are [@agentfacets/facet-studio](https://agentfacets.io/facets/@agentfacets/facet-studio) and [@agentfacets/meeting-to-action](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Sign in with an account granted access to the `@agentfacets` organization, then install the selected package in a consuming project. Anonymous requests cannot access these packages:

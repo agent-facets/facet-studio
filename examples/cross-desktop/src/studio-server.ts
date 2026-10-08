@@ -136,7 +136,7 @@ export async function createStudio(options: {
   const apps = new Map<string, AppProxy>()
   const pending = new Map<string, Promise<AppProxy>>()
   const server = new Server(
-    { name: 'facet-studio-local', version: '0.1.2' },
+    { name: 'facet-studio-local', version: '0.1.3' },
     {
       capabilities: {
         tools: { listChanged: true },
