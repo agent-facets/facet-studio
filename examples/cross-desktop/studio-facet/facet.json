@@ -1,0 +1,22 @@
+{
+  "name": "facet-studio-local",
+  "version": "0.1.0",
+  "description": "Discover and install local facets, then open their packaged apps through one MCP connection.",
+  "skills": {
+    "facet-studio": {
+      "description": "Discover configured local facets and open their installed MCP Apps.",
+      "files": [
+        "app.json",
+        "assets/studio-server.js",
+        "assets/studio.html",
+        "assets/catalog.json",
+        "assets/catalogue/meeting-to-action/facet.json",
+        "assets/catalogue/meeting-to-action/skills/meeting-to-action/SKILL.md",
+        "assets/catalogue/meeting-to-action/skills/meeting-to-action/app.json",
+        "assets/catalogue/meeting-to-action/skills/meeting-to-action/assets/server.js",
+        "assets/catalogue/meeting-to-action/skills/meeting-to-action/assets/view.html",
+        "assets/catalogue/meeting-to-action/skills/meeting-to-action/references/host-setup.md"
+      ]
+    }
+  }
+}

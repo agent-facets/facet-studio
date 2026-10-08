@@ -62,6 +62,7 @@ function Workspace() {
       },
     )
       .then(async (value) => {
+        if (value.connected) return
         const result = await value.call('meeting_open')
         if (active) await meetingAgent.accept(result.plan)
       })

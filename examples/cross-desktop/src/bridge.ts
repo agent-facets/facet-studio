@@ -48,6 +48,8 @@ export async function connectBridge(
   changed: (bridge: Bridge) => void,
   failed: (message: string) => void,
   hostPlanReceived: () => void,
+  createApp: () => App = () =>
+    new App({ name: 'Meeting to Action', version: '0.1.0' }, {}),
 ): Promise<Bridge> {
   if (window.parent === window) {
     const bridge: Bridge = {
@@ -71,26 +73,73 @@ export async function connectBridge(
     changed(bridge)
     return bridge
   }
-  const app = new App({ name: 'Meeting to Action', version: '0.1.0' }, {})
-  app.ontoolresult = (result) => {
-    const payload = result.structuredContent
-    if (payload?.plan)
-      void receiveHostPlan(agent, payload.plan, hostPlanReceived).catch(() =>
-        failed(
-          'The assistant returned an invalid plan. Ask it to correct the tool input.',
+  let toolNames: Record<string, string> = {}
+  const app = createApp()
+  const initial = Promise.withResolvers<void>()
+  const initialTimer = setTimeout(
+    () =>
+      initial.reject(
+        new Error(
+          'The host did not deliver its initial tool result. Reopen the installed app.',
         ),
-      )
+      ),
+    15000,
+  )
+  app.ontoolresult = (result) => {
+    const mapping = result._meta?.facetToolNames
+    if (mapping !== undefined) {
+      const parsed = type({ '[string]': 'string' })(mapping)
+      if (
+        parsed instanceof type.errors ||
+        Object.values(parsed).some(
+          (name) => !/^[A-Za-z0-9_-]{1,64}$/.test(name),
+        )
+      ) {
+        initial.reject(
+          new Error(
+            'The app tool routing is invalid. Reopen the installed app.',
+          ),
+        )
+        return
+      }
+      toolNames = parsed
+    }
+    const payload = result.structuredContent
+    const accepted = payload?.plan
+      ? receiveHostPlan(agent, payload.plan, hostPlanReceived)
+      : Promise.resolve()
+    void accepted
+      .then(() => initial.resolve())
+      .catch(() => {
+        const message =
+          'The assistant returned an invalid plan. Ask it to correct the tool input.'
+        failed(message)
+        initial.reject(new Error(message))
+      })
   }
   app.onhostcontextchanged = (context) => {
     if (context.theme) document.documentElement.dataset.theme = context.theme
   }
-  await app.connect()
+  try {
+    await Promise.all([
+      app.connect(undefined, { timeout: 10000 }),
+      initial.promise,
+    ])
+  } catch (error) {
+    await app.close()
+    throw error
+  } finally {
+    clearTimeout(initialTimer)
+  }
   const context = app.getHostContext()
   if (context?.theme) document.documentElement.dataset.theme = context.theme
   const bridge: Bridge = {
     connected: true,
     async call(name, args = {}) {
-      const result = await app.callServerTool({ name, arguments: args })
+      const result = await app.callServerTool({
+        name: toolNames[name] ?? name,
+        arguments: args,
+      })
       if (result.isError)
         throw new Error(
           'The host could not complete the request. Try again in the conversation.',
@@ -103,7 +152,7 @@ export async function connectBridge(
         content: [
           {
             type: 'text',
-            text: planRequest(plan),
+            text: planRequest(plan, toolNames.meeting_plan),
           },
         ],
       })
@@ -118,8 +167,8 @@ export async function connectBridge(
 }
 
 /** Preserve user-authored meeting identity in the host request. @param plan Current worksheet. @returns Assistant instruction and meeting content. */
-export function planRequest(plan: Plan): string {
-  return `Turn these meeting notes into an action plan using meeting_plan. Preserve this exact meeting title and the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
+export function planRequest(plan: Plan, tool = 'meeting_plan'): string {
+  return `Turn these meeting notes into an action plan using ${tool}. Preserve this exact meeting title and the notes. Use source="host". Only assign owners or dates stated in the notes; leave missing values empty. Meeting title: ${JSON.stringify(plan.title)}\nNotes:\n${plan.notes}`
 }
 
 /** Deliver host state and open review only for a populated host proposal. @param agent State adapter. @param value Untrusted host plan. @param reviewed Review navigation callback. @returns State delivery completion. */

@@ -1,6 +1,35 @@
-# Meeting to Action
+# Facet Studio local catalogue
 
-A Bun prototype that installs a facet containing a skill, an MCP Apps worksheet, and its server. The host assistant reasons about meeting notes. CopilotKit React consumes the resulting AG-UI state. No separate model API or model credential is used.
+A Bun prototype that discovers and installs facets, then opens their packaged apps through one connected MCP server. Studio has its own installable facet containing its UI, server and complete local catalogue. The catalogue currently contains the real Meeting to Action facet and is explicitly local; it does not search the public registry.
+
+The host assistant supplies reasoning. The installed meeting app uses CopilotKit React with AG-UI state. No separate model API or model credential is used.
+
+## Discover, install and open in one host
+
+```sh
+cd examples/cross-desktop
+bun install --frozen-lockfile
+bun run build
+bun dist/studio-server.js
+```
+
+Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant to call `studio_search`. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
+
+`FACET_STUDIO_PROJECT` configures the consuming project at server launch (default `./studio-project`). `FACET_STUDIO_CATALOG` optionally selects trusted local catalogue configuration. Neither path is accepted from the app UI. Catalogue entries declare local source paths and stable IDs; the build ships the sample source beneath `dist/catalogue`.
+
+To install Studio itself, use `facet add` with a local source inside the consuming project, or call the generic installer in the supplied smoke script. Run the installed `skills/facet-studio/assets/studio-server.js` companion. Its neighbouring `studio.html`, `catalog.json` and catalogue files are declared skill companions and travel with it. Bun and a compatible Facet adapter remain prerequisites.
+
+```sh
+facet build studio-facet --verify
+facet build facet --verify
+bun scripts/studio-smoke.ts
+```
+
+The Studio smoke gate installs both bundles with the real CLI, launches installed Studio from `/tmp`, verifies the bundled sample starts uninstalled even when Studio is installed in that same consuming project, then verifies search, install, tool/resource list-change notifications, namespaced app opening, host plan updates and UI reads. It also checks concurrent installs of two distinct local entries preserve both lock records.
+
+The small `app.json` contract is a prototype skill companion, not a new Facet manifest field. It declares schemaVersion, app ID, version, Bun runtime, relative JavaScript entrypoint and open tool. Studio requires matching Facet lock identity and companion hashes before starting an app. Adapter-transformed SKILL.md is checked against the source hash in the CLI lock; executable/UI companions must match installed bytes. App IDs are unique in a catalogue, tools/resources are namespaced, and child/tool startup and CLI work are bounded and cancelled on disconnect.
+
+Native verification of this new discovery path is pending. The prior directly connected meeting worksheet's Claude evidence below does not establish dynamic Studio tool support.
 
 ## Run the browser preview
 

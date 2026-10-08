@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "facet-studio-local",
+  "version": "0.1.0",
+  "runtime": "bun",
+  "entrypoint": "assets/studio-server.js",
+  "openTool": "studio_search"
+}

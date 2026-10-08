@@ -8,7 +8,8 @@
       "files": [
         "assets/server.js",
         "assets/view.html",
-        "references/host-setup.md"
+        "references/host-setup.md",
+        "app.json"
       ]
     }
   }
