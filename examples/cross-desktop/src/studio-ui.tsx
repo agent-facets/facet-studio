@@ -4,6 +4,7 @@ import { App } from '@modelcontextprotocol/ext-apps'
 import { type } from 'arktype'
 import './studio-style.css'
 import { contextQuery } from './search'
+import { requestOpen } from './open-request'
 import { useAgent } from '@copilotkit/react-core/v2/headless'
 import { CopilotKitCoreReact } from '@copilotkit/react-core/v2/context'
 import {
@@ -142,7 +143,7 @@ function Studio() {
         alive.current = false
       }
     }
-    const app = new App({ name: 'Facet Studio', version: '0.1.2' }, {})
+    const app = new App({ name: 'Facet Studio', version: '0.1.3' }, {})
     appRef.current = app
     app.ontoolinput = (input) => {
       if (!alive.current) return
@@ -351,14 +352,9 @@ function Studio() {
           !/^[a-zA-Z0-9_-]{1,128}$/.test(item.openTool)
         )
           throw new Error('Missing installed app tool.')
-        const result = await appRef.current!.sendMessage({
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Open the installed facet ${JSON.stringify(item.name)} by calling the tool ${item.openTool} with empty arguments. Show its app in this conversation.`,
-            },
-          ],
+        const result = await requestOpen(appRef.current!, {
+          name: item.name,
+          openTool: item.openTool,
         })
         if (result.isError) throw new Error('Host declined request.')
         if (current())
