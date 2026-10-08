@@ -1,8 +1,18 @@
-# Present the Studio and Meeting demo
+# Example runbook
 
-This is a runnable prototype for showing discovery, real package installation, and an interactive meeting worksheet inside one assistant connection. The host assistant supplies the reasoning. CopilotKit owns frontend-tool execution, approval components, and shared state. There is no second model endpoint or nested chat.
+Run discovery, real package installation, and an interactive meeting worksheet inside one assistant connection. The host assistant supplies the reasoning. CopilotKit owns frontend-tool execution, approval components, and shared state. There is no second model endpoint or nested chat.
 
-Use Claude Desktop for the demonstrated 0.1.1 path. Codex instructions are included, but its new 0.1.1 connection still needs a presenter rehearsal. The earlier 0.1.0 Codex connection rendered inline and saved an edit; that is not proof of the new approval flow.
+Claude Desktop verified the full 0.1.2 flow in a fresh chat with only the replacement `facet-studio` connection: natural discovery, approved installation, the installed worksheet, host proposal, editing Maya to Rae, and approved save. No post-install restart was needed. Codex instructions are included, but the 0.1.1 approval flow has not been visually verified there. The earlier 0.1.0 Codex connection rendered inline and saved an edit.
+
+The 0.1.2 opening “Can you find me a facet to organize meeting notes into action items?” selected `studio_search` with query `meeting notes action items` in Claude Desktop. A broader request to organize notes previously selected Notion; host instructions guide tool choice but do not guarantee it.
+
+## Recording
+
+40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
+
+![Natural request, contextual search, approved installation, meeting notes, host action plan, Rae edit, and approved save in Claude Desktop](docs/media/meeting-workflow.gif)
+
+[Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
 
 ## Prepare from source
 
@@ -18,7 +28,7 @@ curl -fsSL https://agentfacets.io/install | bash
 Clone the private repository with your authorized GitHub account, or start from an existing checkout:
 
 ```sh
-git clone --branch feat/cross-desktop-harness https://github.com/agent-facets/facet-studio.git
+git clone --branch main https://github.com/agent-facets/facet-studio.git
 cd facet-studio
 cd examples/cross-desktop
 bun --version
@@ -27,14 +37,14 @@ bun install --frozen-lockfile
 bun run build
 ```
 
-The demo is on `feat/cross-desktop-harness` (PR #4), not the repository’s current default branch. In an existing checkout, preserve your work before running `git switch feat/cross-desktop-harness`; fetch that branch first if it is not present locally.
+The example is merged into `main`. In an existing checkout, preserve your work before switching to `main` and pulling the latest changes.
 
 Keep this terminal open for the connection steps. Resolve paths from this checkout and create a fresh consuming project:
 
 ```sh
 export FACET_DEMO_ROOT="$(pwd)"
 export FACET_DEMO_BUN="$(command -v bun)"
-export FACET_DEMO_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-studio-demo.XXXXXX")"
+export FACET_DEMO_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-studio.XXXXXX")"
 printf 'Server: %s\nProject: %s\n' "$FACET_DEMO_ROOT/dist/studio-server.js" "$FACET_DEMO_PROJECT"
 facet adapter list
 ```
@@ -61,15 +71,17 @@ Keep the normal Facet home. Setting `FACET_DIR` to an empty directory hides inst
 Generate a configuration fragment with the actual absolute Bun, server, and project paths:
 
 ```sh
-bun -e 'console.log(JSON.stringify({mcpServers:{"facet-studio-demo":{command:process.env.FACET_DEMO_BUN,args:[process.env.FACET_DEMO_ROOT+"/dist/studio-server.js"],env:{FACET_STUDIO_PROJECT:process.env.FACET_DEMO_PROJECT,PATH:process.env.PATH}}}},null,2))'
+bun -e 'console.log(JSON.stringify({mcpServers:{"facet-studio":{command:process.env.FACET_DEMO_BUN,args:[process.env.FACET_DEMO_ROOT+"/dist/studio-server.js"],env:{FACET_STUDIO_PROJECT:process.env.FACET_DEMO_PROJECT,PATH:process.env.PATH}}}},null,2))'
 ```
 
-Merge the printed `facet-studio-demo` entry into the `mcpServers` object in Claude Desktop's local MCP configuration. On macOS the usual file is `~/Library/Application Support/Claude/claude_desktop_config.json`; use the app's developer/configuration controls to locate it. Preserve other server entries. The generated fragment has this shape:
+Back up the host configuration and stop any existing Studio or standalone Meeting connection first. Remove its legacy entry, including `facet-studio-prototype` or `facet-studio-demo` if present, before adding the replacement. Do not keep old and new Studio connections enabled together. Preserve unrelated servers.
+
+Merge the printed `facet-studio` entry into the `mcpServers` object in Claude Desktop's local MCP configuration. On macOS the usual file is `~/Library/Application Support/Claude/claude_desktop_config.json`; use the app's developer/configuration controls to locate it. Preserve other server entries. The generated fragment has this shape:
 
 ```json
 {
   "mcpServers": {
-    "facet-studio-demo": {
+    "facet-studio": {
       "command": "/absolute/path/from/command-v-bun",
       "args": ["/absolute/checkout/examples/cross-desktop/dist/studio-server.js"],
       "env": {
@@ -81,35 +93,35 @@ Merge the printed `facet-studio-demo` entry into the `mcpServers` object in Clau
 }
 ```
 
-After saving configuration, reconnect the server or fully quit and reopen Claude Desktop if needed. Start a new chat and enable this server. Disable older Studio/Meeting demo connections in that chat so the assistant cannot select an obsolete standalone tool. This setup restart happens once before the demo; installation and opening the meeting app then use the same running connection.
+After saving configuration, reconnect the server or fully quit and reopen Claude Desktop if needed. Start a new chat and enable only the replacement `facet-studio` connection for this workflow. This setup restart happens once before the demo; installation and opening the meeting app then use the same running connection.
 
 Do not run `bun dist/studio-server.js` in a terminal expecting a web page. It is a stdio MCP process launched by the host.
 
 ## Connect Codex
 
-Use the paths exported during source preparation. The CLI writes a stdio MCP entry:
+Use the paths exported during source preparation. Back up your Codex configuration, stop the existing Studio connection, and inspect `codex mcp list`. Remove only the old Studio/standalone Meeting entries being replaced, using `codex mcp remove <old-name>` (for example, `facet-studio-prototype` or `facet-studio-demo`). Do not leave a legacy connection active alongside the replacement. The CLI writes this stdio MCP entry:
 
 ```sh
-codex mcp add facet-studio-demo \
+codex mcp add facet-studio \
   --env "FACET_STUDIO_PROJECT=$FACET_DEMO_PROJECT" \
   --env "PATH=$PATH" \
   -- "$FACET_DEMO_BUN" "$FACET_DEMO_ROOT/dist/studio-server.js"
 codex mcp list
 ```
 
-If that demo name already exists and you intend to replace it, remove only that entry first with `codex mcp remove facet-studio-demo`, then repeat the add command. Reconnect or reopen Codex and start a new task using this server. Rendering happens in an MCP Apps-capable Codex UI; the terminal CLI configuration command does not itself display a card.
+If `facet-studio` already exists and you intend to replace it, remove only that entry first with `codex mcp remove facet-studio`, then repeat the add command. Reconnect or reopen Codex and start a new task using this server. Rendering happens in an MCP Apps-capable Codex UI; the terminal CLI configuration command does not itself display a card.
 
-Rehearse the entire 0.1.1 flow before using Codex as the presentation host. Its earlier 0.1.0 inline/save evidence does not cover the new installation and save approval components.
+Rehearse the entire 0.1.2 flow before relying on Codex for the example. Its earlier 0.1.0 inline/save evidence does not cover the new installation and save approval components.
 
 ## Five-minute walkthrough
 
 All names and notes here are fictional.
 
-1. **Discover, about one minute.** Ask the assistant: “Open Facet Studio's local catalogue so I can find a meeting action-plan tool. Use the connected Studio demo.” If it needs an exact entry point, ask it to call `studio_search` with `{"query":"meeting"}`. Type `meeting` into the inline search and click Search. Explain that this is the configured local catalogue, not a public registry search.
+1. **Discover, about one minute.** Ask the assistant: “Can you find me a facet to organize meeting notes into action items?” The connected server's discovery guidance asks the host to derive relevant task keywords and show a matching inline facet. The first search call carries those keywords, so the search field is already filled in. Explain that this is a configured local catalogue, not a public registry search. Hosts still decide which tools to use; if no card appears, use the troubleshooting step below.
 2. **Review installation, about one minute.** Click Install on Meeting to Action. In the rendered review component, choose Decline. Nothing is installed. Click Install again, then Approve. This invokes the real Facet CLI. When it finishes, choose Open. If the host puts the Open request in its composer, send it. The installed worksheet opens at Capture notes without restarting the connection.
 3. **Use host reasoning, about one minute.** Set the title to `Pilot readiness` and paste the notes below. Choose Ask assistant. Send the plain-language request if it appears in the composer. The host assistant returns an action plan into the worksheet; it may create a new card that opens directly in Review.
 4. **Review and save, about one minute.** Confirm Maya's date, Leo's blank date, and the unassigned feedback task. Change Maya to Rae. Choose Save plan, inspect the approval snapshot, and Decline. The local edit remains; no save runs. Choose Save plan again and Approve. Look for “Approved plan saved for this server session.”
-5. **Keep the result, about one minute.** Export Markdown. Explain that the downloaded file travels with the presenter, while Save updates this running app session. Reopen the installed app from Studio if you want to demonstrate shared saved state.
+5. **Keep the result, about one minute.** Export Markdown. Explain that the downloaded file can be kept and shared, while Save updates this running app session. Reopen the installed app from Studio if you want to demonstrate shared saved state.
 
 ```text
 Pilot readiness meeting — 8 October 2026.
@@ -121,7 +133,7 @@ We need to collect feedback after the rehearsal, but no owner or date was assign
 
 Expected proposal: title `Pilot readiness`, Maya due `2026-10-12`, Leo with an empty due date, and feedback with an empty owner and date. Review the actual result: the host is doing real reasoning, so wording can vary. Do not claim every host response is deterministic.
 
-## What the presenter is demonstrating
+## How the example works
 
 | Responsibility | Implementation |
 |---|---|
@@ -149,30 +161,30 @@ Key files, relative to this directory:
 
 Both versions are private and require organization access:
 
-- [@agentfacets/facet-studio 0.1.1](https://agentfacets.io/facets/@agentfacets/facet-studio)
-- [@agentfacets/meeting-to-action 0.1.1](https://agentfacets.io/facets/@agentfacets/meeting-to-action)
+- [@agentfacets/facet-studio 0.1.2](https://agentfacets.io/facets/@agentfacets/facet-studio)
+- [@agentfacets/meeting-to-action 0.1.2](https://agentfacets.io/facets/@agentfacets/meeting-to-action)
 
 The source setup above is the simplest reproducible route. To demonstrate package travel separately, use a fresh project with your normal Facet home:
 
 ```sh
 export FACET_PACKAGE_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-package-demo.XXXXXX")"
 cd "$FACET_PACKAGE_PROJECT"
-facet add @agentfacets/facet-studio@0.1.1
+facet add @agentfacets/facet-studio@0.1.2
 # Optional independent meeting package:
-facet add @agentfacets/meeting-to-action@0.1.1
+facet add @agentfacets/meeting-to-action@0.1.2
 ```
 
-The selected adapter materializes `skills/facet-studio/assets/studio-server.js` beneath its output directory, such as `.agents/` or `.opencode/`. Inspect the install output to locate the actual file. An installed Studio host entry points to that absolute companion instead of the source `dist/studio-server.js`. Keep its neighboring HTML, catalogue and nested companion files together. Bun remains required; the source checkout and `node_modules` do not. Avoid changing the working presentation connection just to show this optional path.
+The selected adapter materializes `skills/facet-studio/assets/studio-server.js` beneath its output directory, such as `.agents/` or `.opencode/`. Inspect the install output to locate the actual file. An installed Studio host entry points to that absolute companion instead of the source `dist/studio-server.js`. Keep its neighboring HTML, catalogue and nested companion files together. Bun remains required; the source checkout and `node_modules` do not. Avoid changing the working example connection just to show this optional path.
 
 ## Reset and recover
 
-**Start a clean demonstration:** export any plan worth keeping, stop/reconnect the demo server, create another project with the `mktemp` command, and update `FACET_STUDIO_PROJECT` in the host entry. For Codex, remove/re-add only the demo entry with the new environment value. For Claude, regenerate and merge the fragment. Start a new chat/task. Changing a shell variable alone does not change an already-running host process. Keeping the old project is safe; no deletion is required.
+**Start a clean demonstration:** export any plan worth keeping, stop/reconnect the demo server, create another project with the `mktemp` command, and update `FACET_STUDIO_PROJECT` in the host entry. For Codex, remove/re-add only the `facet-studio` entry with the new environment value. For Claude, regenerate and merge the fragment. Start a new chat/task. Changing a shell variable alone does not change an already-running host process. Keeping the old project is safe; no deletion is required.
 
 **Save versus Export:** Save updates the live child server's shared worksheet. It is not a disk-backed plan file. Restarting that server clears its plan even though package installation remains on disk. Export Markdown creates a durable file through the host/browser download flow.
 
 | Symptom | Recovery |
 |---|---|
-| No inline card | Confirm this is an MCP Apps-capable host UI, the demo server is enabled, and `studio_search` was called. Check host MCP logs for the configured absolute Bun/server paths. CLI text output alone is not a rendering test. |
+| No inline card | Confirm an MCP Apps-capable host UI and the enabled current demo server. If the host did not discover it from the natural request, ask it to call `studio_search` with `{"query":"meeting notes actions"}`. This technical fallback diagnoses host tool choice; it is not the normal opening script. Check MCP logs for the absolute Bun/server paths. |
 | Old UI or unknown tool | Disable the old demo connection, reconnect the intended entry, and start a fresh chat. Do not ask the assistant to use an older standalone `meeting_open` connection. |
 | Request appears in composer | Send it. The app prepares the host request; it does not promise the host will submit it automatically. |
 | Install cannot finish | Run `facet adapter list` and ensure an adapter is installed. Check the consuming directory is writable and the host's PATH includes the CLI. Preserve the normal Facet home. |
@@ -197,4 +209,4 @@ Open `http://127.0.0.1:4328`. This shows the same meeting worksheet with sample 
 
 The catalogue is fixed at startup and currently contains one real meeting fixture. Each app has one primary UI. CopilotKit uses the installed SDK's `agents__unsafe_dev_only` registration API; this is prototype integration. Client approval controls the demonstrated UI workflow, not authorization against direct MCP tool calls. The server's path, catalogue and installed-byte checks are separate protections.
 
-The native 0.1.1 Claude sequence above has been exercised, including both decline and approve paths. Codex 0.1.1 visual/interaction rehearsal is still pending. This is a viable local demo with explicit limits, not a claim that every host and deployment configuration is fully tested.
+The full native 0.1.2 Claude workflow has been exercised. Both decline paths were also exercised in the earlier 0.1.1 run. The current Codex visual/interaction rehearsal remains pending. This is a viable local demo with explicit limits, not a claim that every host and deployment configuration is fully tested.

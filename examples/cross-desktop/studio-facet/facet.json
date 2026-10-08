@@ -1,6 +1,6 @@
 {
   "name": "@agentfacets/facet-studio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Discover and install local facets, then open their packaged apps through one MCP connection.",
   "skills": {

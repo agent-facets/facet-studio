@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { type } from 'arktype'
 import { mkdtemp, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -302,6 +303,16 @@ test('predeclared bridge refuses uninstalled calls and resources without startin
     await expect(
       client.readResource({ uri: stableResource('test-app') }),
     ).rejects.toThrow()
+    const query = 'organize test app'
+    const searched = await client.callTool({
+      name: 'studio_search',
+      arguments: { query },
+    })
+    const { contextQuery } = await import('./search')
+    expect(contextQuery(searched.structuredContent)).toBe(query)
+    expect(
+      type({ items: 'unknown[]' }).assert(searched.structuredContent).items,
+    ).toHaveLength(1)
     expect(start).not.toHaveBeenCalled()
   } finally {
     await client.close()

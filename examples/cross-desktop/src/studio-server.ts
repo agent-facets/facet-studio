@@ -19,6 +19,7 @@ import { createCliSetup } from '../../../mcp/src/cli-setup'
 import { loadCatalog, findInstalledApp, type CatalogEntry } from './catalog'
 import { installLocalFacet } from './install'
 import { AppProxy, bounded } from './app-proxy'
+import { matchesIntent } from './search'
 
 const studioUri = 'ui://facet-studio/catalog.html'
 const SearchSchema = type({ 'query?': 'string <= 200' })
@@ -35,10 +36,17 @@ const staticTools: Tool[] = [
     name: 'studio_search',
     title: 'Discover local facets',
     description:
-      'Search the explicitly configured local prototype catalogue and show Facet Studio. This does not search the public registry.',
+      'Find an interactive workflow for the user’s knowledge-work task. Proactively use this when someone asks to organize meeting notes, capture decisions, assign owners, or track follow-ups, even if they have not mentioned tools or Studio. Derive concise task keywords from their context, pass them as query, and show the matching inline card. Example: “Can you help me organize my meeting notes?” becomes query “meeting notes actions”. This searches only the configured local catalogue, not the public registry. Search does not install anything.',
     inputSchema: {
       type: 'object',
-      properties: { query: { type: 'string', maxLength: 200 } },
+      properties: {
+        query: {
+          type: 'string',
+          maxLength: 200,
+          description:
+            'Two to five task keywords from the user’s request, such as meeting notes actions or meeting minutes follow-ups. The query is echoed into the search field. Omit or leave empty only to browse all local entries.',
+        },
+      },
       additionalProperties: false,
     },
     _meta: uiMeta,
@@ -47,7 +55,7 @@ const staticTools: Tool[] = [
     name: 'studio_install',
     title: 'Install a local facet',
     description:
-      'Install the selected configured local facet through the Facet CLI and expose its verified app tools in this connection. After installation, call the returned app.openTool to open its UI.',
+      'Install a configured local facet only after the user explicitly chooses and approves installation in the inline workflow. Never install merely because search found a match. After installation, call the returned app.openTool to open its UI.',
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', maxLength: 48 } },
@@ -98,7 +106,7 @@ function bridgeTool(entry: CatalogEntry): Tool {
   return {
     name: stableTool(entry.id),
     title: `Open ${entry.name}`,
-    description: `Open the installed ${entry.name} app with {}. Only works after installation. To use an app operation, pass {tool: original tool name, arguments: its input}. The open result supplies the original operation schemas; the child validates those inputs.`,
+    description: `Open the installed ${entry.name} app with {}. This bridge is intentionally advertised before installation so hosts can cache it; its presence does not mean the app is installed. It refuses calls until the selected app is installed. To use an app operation, pass {tool: original tool name, arguments: its input}. The open result supplies the original operation schemas; the child validates those inputs.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -128,14 +136,14 @@ export async function createStudio(options: {
   const apps = new Map<string, AppProxy>()
   const pending = new Map<string, Promise<AppProxy>>()
   const server = new Server(
-    { name: 'facet-studio-local', version: '0.1.1' },
+    { name: 'facet-studio-local', version: '0.1.2' },
     {
       capabilities: {
         tools: { listChanged: true },
         resources: { listChanged: true },
       },
       instructions:
-        'Facet Studio searches an explicitly local prototype catalogue. Install a catalogue id, then call the returned app.openTool. Installation publishes namespaced tools in this same connection; no per-facet host configuration is needed.',
+        'When a user asks for help with knowledge work, look for a matching interactive workflow without requiring them to name Studio or a tool. For example, “Can you help me organize my meeting notes?” should lead to studio_search with concise query keywords such as “meeting notes actions”. Use task nouns and useful synonyms from their context, not generic filler such as help or organize. The first search call carries this context and prefills the inline search field. Show relevant results and let the user choose; never auto-install. This prototype searches a fixed local catalogue, not the public registry. Stable app bridge tools are intentionally advertised before installation and do not prove installed status; trust search item.installed. After explicit approved installation, use returned app.openTool in the same connection without a per-facet restart.',
     },
   )
   let closing = false
@@ -388,11 +396,7 @@ export async function createStudio(options: {
           result = {
             query,
             items: entries
-              .filter((entry) =>
-                `${entry.name} ${entry.description}`
-                  .toLowerCase()
-                  .includes(query.trim().toLowerCase()),
-              )
+              .filter((entry) => matchesIntent(entry, query))
               .map(item),
           }
         } else if (request.params.name === 'studio_setup') {

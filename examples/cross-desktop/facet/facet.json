@@ -1,8 +1,8 @@
 {
   "name": "@agentfacets/meeting-to-action",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
-  "description": "Turn meeting notes into an editable action plan in an MCP Apps host.",
+  "description": "Organize meeting notes and minutes into decisions, action items, owners, dates and follow-ups in an editable worksheet.",
   "skills": {
     "meeting-to-action": {
       "description": "Use the packaged visual worksheet to review meeting decisions, owners and follow-ups.",

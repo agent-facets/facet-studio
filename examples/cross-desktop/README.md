@@ -1,20 +1,30 @@
 # Facet Studio local catalogue
 
-**Presenting or handing this off?** Follow [DEMO.md](DEMO.md) for setup, host connection, the five-minute walkthrough, and recovery steps.
+**Run the example:** Follow the [Example runbook](DEMO.md) for setup, host connection, the five-minute walkthrough, and recovery steps.
 
 A Bun prototype that discovers and installs facets, then opens their packaged apps through one connected MCP server. Studio has its own installable facet containing its UI, server and complete local catalogue. The catalogue currently contains the real Meeting to Action facet and is explicitly local; it does not search the public registry.
 
 The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit registered frontend tools, rendered human approval components, and shared AG-UI state. Search runs through a frontend handler. Installation and saving first await the actual CopilotKit human-in-the-loop renderer; declining produces no install/save call. Approved handlers use the existing MCP transport adapter. No separate model API or model credential is used.
 
+The source discovery update is 0.1.2. It retains the query contract, adds intent keyword/synonym matching, and clarifies that a predeclared app bridge does not imply installation. Both private registry packages are published as 0.1.2.
+
+## Recording
+
+40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
+
+![Natural request, contextual search, approved installation, meeting notes, host action plan, Rae edit, and approved save in Claude Desktop](docs/media/meeting-workflow.gif)
+
+[Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
+
 ## Private registry packages
 
-The private 0.1.1 releases are [@agentfacets/facet-studio](https://agentfacets.io/facets/@agentfacets/facet-studio) and [@agentfacets/meeting-to-action](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Sign in with an account granted access to the `@agentfacets` organization, then install the selected package in a consuming project. Anonymous requests cannot access these packages:
+The private 0.1.2 releases are [@agentfacets/facet-studio](https://agentfacets.io/facets/@agentfacets/facet-studio) and [@agentfacets/meeting-to-action](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Sign in with an account granted access to the `@agentfacets` organization, then install the selected package in a consuming project. Anonymous requests cannot access these packages:
 
 ```sh
 facet login
-facet add @agentfacets/facet-studio@0.1.1
+facet add @agentfacets/facet-studio@0.1.2
 # Optional direct worksheet package:
-facet add @agentfacets/meeting-to-action@0.1.1
+facet add @agentfacets/meeting-to-action@0.1.2
 ```
 
 Studio still ships an explicitly local catalogue containing the meeting package. Its discovery screen installs that bundled source through the real CLI; it does not claim registry search. The unscoped app descriptor IDs and companion directory names remain stable routing identities, separate from scoped registry package names. Both packages carry their own server/UI assets; Studio also carries the complete meeting source fixture.
@@ -28,7 +38,7 @@ bun run build
 bun dist/studio-server.js
 ```
 
-Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant to call `studio_search`. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
+Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant, “Can you find me a facet to organize meeting notes into action items?” The server instructions and search metadata guide the host to search concise task keywords, which prefill the inline card. Tool selection remains host-dependent; the runbook includes a technical troubleshooting fallback. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
 
 `FACET_STUDIO_PROJECT` configures the consuming project at server launch (default `./studio-project`). `FACET_STUDIO_CATALOG` optionally selects trusted local catalogue configuration. Neither path is accepted from the app UI. Catalogue entries declare local source paths and stable IDs; the build ships the sample source beneath `dist/c`.
 
@@ -123,8 +133,9 @@ The 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mo
 
 | Native surface | Verified evidence | Remaining limit |
 |---|---|---|
+| Claude Desktop, 0.1.2 | A fresh chat with only `facet-studio` selected contextual search from “Can you find me a facet to organize meeting notes into action items?” and passed `meeting notes action items`. Approved real installation opened the worksheet without restarting; notes produced a host plan, Maya was edited to Rae, and approved Save succeeded. | A broader organize-notes request previously selected Notion. Host tool choice is not guaranteed. |
 | Claude Desktop, 0.1.1 | Native search click, decline installation with no install, approve real CLI installation, and Open into Capture notes. The host returned a plan; editing Maya to Rae followed by declining Save preserved the edits, and approving Save succeeded. No post-install host restart was needed. | Verified with the bundled local catalogue in this setup, not every host version or catalogue. |
-| Codex, earlier 0.1.0 connection | User-provided inline rendering image; user edited Maya to Rae and reported Save succeeded. Independent stable-Open readback returned Rae with host provenance and edited state. | The newly configured 0.1.1 connection has not had its full visual/interaction walkthrough verified. Do not present the earlier result as 0.1.1 approval-flow evidence. |
+| Codex, earlier 0.1.0 connection | User-provided inline rendering image; user edited Maya to Rae and reported Save succeeded. Independent stable-Open readback returned Rae with host provenance and edited state. | The newly configured 0.1.1 connection has not had its full visual/interaction walkthrough verified. Do not treat the earlier result as 0.1.1 approval-flow evidence. |
 
 The local AG-UI adapter forwards validated host state and emits lifecycle events. It does not generate sample content on behalf of an assistant. CopilotKit's headless/context exports keep the self-contained resource within the MCP SDK's default message limit. The current core registration API is named `agents__unsafe_dev_only`; this is a prototype integration, with exact dependency versions recorded in the lockfile.
 
