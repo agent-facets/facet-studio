@@ -1,8 +1,16 @@
-# Present the Studio and Meeting demo
+# Example runbook
 
-This is a runnable prototype for showing discovery, real package installation, and an interactive meeting worksheet inside one assistant connection. The host assistant supplies the reasoning. CopilotKit owns frontend-tool execution, approval components, and shared state. There is no second model endpoint or nested chat.
+Run discovery, real package installation, and an interactive meeting worksheet inside one assistant connection. The host assistant supplies the reasoning. CopilotKit owns frontend-tool execution, approval components, and shared state. There is no second model endpoint or nested chat.
 
-Use Claude Desktop for the demonstrated 0.1.1 path. Codex instructions are included, but its new 0.1.1 connection still needs a presenter rehearsal. The earlier 0.1.0 Codex connection rendered inline and saved an edit; that is not proof of the new approval flow.
+Use Claude Desktop for the demonstrated 0.1.1 path. Codex instructions are included, but its new 0.1.1 connection still needs a example walkthrough. The earlier 0.1.0 Codex connection rendered inline and saved an edit; that is not proof of the new approval flow.
+
+## Recording
+
+Animated walkthrough captured from Claude Desktop; pauses shortened.
+
+![Search, install Meeting to Action, and open its worksheet](docs/media/meeting-workflow.gif)
+
+[Watch or download the MP4 recording](docs/media/meeting-workflow.mp4).
 
 ## Prepare from source
 
@@ -18,7 +26,7 @@ curl -fsSL https://agentfacets.io/install | bash
 Clone the private repository with your authorized GitHub account, or start from an existing checkout:
 
 ```sh
-git clone --branch feat/cross-desktop-harness https://github.com/agent-facets/facet-studio.git
+git clone --branch main https://github.com/agent-facets/facet-studio.git
 cd facet-studio
 cd examples/cross-desktop
 bun --version
@@ -27,7 +35,7 @@ bun install --frozen-lockfile
 bun run build
 ```
 
-The demo is on `feat/cross-desktop-harness` (PR #4), not the repository’s current default branch. In an existing checkout, preserve your work before running `git switch feat/cross-desktop-harness`; fetch that branch first if it is not present locally.
+The example is merged into `main`. In an existing checkout, preserve your work before switching to `main` and pulling the latest changes.
 
 Keep this terminal open for the connection steps. Resolve paths from this checkout and create a fresh consuming project:
 
@@ -99,7 +107,7 @@ codex mcp list
 
 If that demo name already exists and you intend to replace it, remove only that entry first with `codex mcp remove facet-studio-demo`, then repeat the add command. Reconnect or reopen Codex and start a new task using this server. Rendering happens in an MCP Apps-capable Codex UI; the terminal CLI configuration command does not itself display a card.
 
-Rehearse the entire 0.1.1 flow before using Codex as the presentation host. Its earlier 0.1.0 inline/save evidence does not cover the new installation and save approval components.
+Rehearse the entire 0.1.1 flow before relying on Codex for the example. Its earlier 0.1.0 inline/save evidence does not cover the new installation and save approval components.
 
 ## Five-minute walkthrough
 
@@ -109,7 +117,7 @@ All names and notes here are fictional.
 2. **Review installation, about one minute.** Click Install on Meeting to Action. In the rendered review component, choose Decline. Nothing is installed. Click Install again, then Approve. This invokes the real Facet CLI. When it finishes, choose Open. If the host puts the Open request in its composer, send it. The installed worksheet opens at Capture notes without restarting the connection.
 3. **Use host reasoning, about one minute.** Set the title to `Pilot readiness` and paste the notes below. Choose Ask assistant. Send the plain-language request if it appears in the composer. The host assistant returns an action plan into the worksheet; it may create a new card that opens directly in Review.
 4. **Review and save, about one minute.** Confirm Maya's date, Leo's blank date, and the unassigned feedback task. Change Maya to Rae. Choose Save plan, inspect the approval snapshot, and Decline. The local edit remains; no save runs. Choose Save plan again and Approve. Look for “Approved plan saved for this server session.”
-5. **Keep the result, about one minute.** Export Markdown. Explain that the downloaded file travels with the presenter, while Save updates this running app session. Reopen the installed app from Studio if you want to demonstrate shared saved state.
+5. **Keep the result, about one minute.** Export Markdown. Explain that the downloaded file can be kept and shared, while Save updates this running app session. Reopen the installed app from Studio if you want to demonstrate shared saved state.
 
 ```text
 Pilot readiness meeting — 8 October 2026.
@@ -121,7 +129,7 @@ We need to collect feedback after the rehearsal, but no owner or date was assign
 
 Expected proposal: title `Pilot readiness`, Maya due `2026-10-12`, Leo with an empty due date, and feedback with an empty owner and date. Review the actual result: the host is doing real reasoning, so wording can vary. Do not claim every host response is deterministic.
 
-## What the presenter is demonstrating
+## How the example works
 
 | Responsibility | Implementation |
 |---|---|
@@ -162,7 +170,7 @@ facet add @agentfacets/facet-studio@0.1.1
 facet add @agentfacets/meeting-to-action@0.1.1
 ```
 
-The selected adapter materializes `skills/facet-studio/assets/studio-server.js` beneath its output directory, such as `.agents/` or `.opencode/`. Inspect the install output to locate the actual file. An installed Studio host entry points to that absolute companion instead of the source `dist/studio-server.js`. Keep its neighboring HTML, catalogue and nested companion files together. Bun remains required; the source checkout and `node_modules` do not. Avoid changing the working presentation connection just to show this optional path.
+The selected adapter materializes `skills/facet-studio/assets/studio-server.js` beneath its output directory, such as `.agents/` or `.opencode/`. Inspect the install output to locate the actual file. An installed Studio host entry points to that absolute companion instead of the source `dist/studio-server.js`. Keep its neighboring HTML, catalogue and nested companion files together. Bun remains required; the source checkout and `node_modules` do not. Avoid changing the working example connection just to show this optional path.
 
 ## Reset and recover
 

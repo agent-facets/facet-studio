@@ -4,7 +4,7 @@ facet-studio is a toolkit for authoring, building, and installing agent facets �
 
 ## Run the cross-desktop demo
 
-Start with the [presenter runbook](examples/cross-desktop/DEMO.md) for the runnable **Studio → install → Meeting to Action** prototype. It includes source setup, Claude Desktop and Codex connection commands, a five-minute walkthrough, and reset/troubleshooting instructions. [Implementation and verification notes](examples/cross-desktop/README.md) describe the portable private packages and CopilotKit workflow.
+Start with the [Example runbook](examples/cross-desktop/DEMO.md) for the runnable **Studio → install → Meeting to Action** prototype. It includes source setup, Claude Desktop and Codex connection commands, a five-minute walkthrough, and reset/troubleshooting instructions. [Implementation and verification notes](examples/cross-desktop/README.md) describe the portable private packages and CopilotKit workflow.
 
 That prototype lives in `examples/cross-desktop/` and uses MCP Apps, CopilotKit frontend tools, human approval, and AG-UI state. The console/plugin sections below describe the separate legacy implementation; their host support table does not apply to the prototype.
 
