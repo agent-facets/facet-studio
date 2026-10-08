@@ -24,7 +24,7 @@ const ItemSchema = type({
   name: 'string > 0',
   description: 'string',
   version: 'string',
-  source: "'local'",
+  source: "'local' | 'registry'",
   installed: 'boolean',
   'openTool?': 'string',
 })
@@ -124,7 +124,7 @@ function Studio() {
       'studio_search',
     )
     setNotice(
-      `${result.items.length} local ${result.items.length === 1 ? 'facet' : 'facets'} found.`,
+      `${result.items.length} registry ${result.items.length === 1 ? 'facet' : 'facets'} found.`,
     )
     const initialQuery = contextQuery(result)
     if (initialQuery !== undefined) {
@@ -143,7 +143,7 @@ function Studio() {
         alive.current = false
       }
     }
-    const app = new App({ name: 'Facet Studio', version: '0.1.3' }, {})
+    const app = new App({ name: 'Facet Studio', version: '0.1.4' }, {})
     appRef.current = app
     app.ontoolinput = (input) => {
       if (!alive.current) return
@@ -284,8 +284,8 @@ function Studio() {
         const result = await workflow.invoke(
           'search',
           { query: term },
-          'Search local facets',
-          'Read the configured local catalogue.',
+          'Search registry facets',
+          'Search published @agentfacets packages using your Facet CLI account.',
         )
         if (current()) {
           receiveSearch(result)
@@ -303,7 +303,7 @@ function Studio() {
       async (current) => {
         const outcome = await workflow.invoke(
           'install',
-          { id: item.id },
+          { id: item.id, version: item.version },
           `Install ${item.name}?`,
           'This installs its packaged skills and app into the selected project. Approve to continue.',
         )
@@ -398,7 +398,7 @@ function Studio() {
         <div className="studio-brand">
           Facet <span>Studio</span>
         </div>
-        <span className="studio-local">Local catalogue</span>
+        <span className="studio-local">@agentfacets registry</span>
       </header>
       <form className="studio-search" onSubmit={search}>
         <label htmlFor="studio-query">What would you like to do?</label>
@@ -425,14 +425,15 @@ function Studio() {
         {items === null && (
           <p className="studio-empty">
             {connected
-              ? 'Search the local catalogue to find a facet for your task.'
+              ? 'Search the registry for supported apps. Meeting to Action is currently supported.'
               : 'Waiting for the assistant connection.'}
           </p>
         )}
         {items?.length === 0 && (
           <p className="studio-empty">
-            No local facets match {searched ? `“${searched}”` : 'this search'}.
-            Try a different task or keyword.
+            No supported registry apps match{' '}
+            {searched ? `“${searched}”` : 'this search'}. Try a different task
+            or keyword.
           </p>
         )}
         {items?.map((item) => (
@@ -441,7 +442,7 @@ function Studio() {
             <p>{item.description}</p>
             <div className="studio-result-footer">
               <span className="studio-meta">
-                Local facet · v{item.version}
+                Registry facet · v{item.version}
                 {item.installed ? ' · Installed' : ''}
               </span>
               {item.installed ? (

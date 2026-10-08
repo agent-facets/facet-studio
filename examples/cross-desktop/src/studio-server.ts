@@ -17,13 +17,18 @@ import { resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createCliSetup } from '../../../mcp/src/cli-setup'
 import { loadCatalog, findInstalledApp, type CatalogEntry } from './catalog'
-import { installLocalFacet } from './install'
+import { installLocalFacet, installRegistryFacet } from './install'
+import {
+  registryEntry,
+  registryEntryFromLock,
+  searchRegistry,
+} from './registry'
 import { AppProxy, bounded } from './app-proxy'
 import { matchesIntent } from './search'
 
 const studioUri = 'ui://facet-studio/catalog.html'
 const SearchSchema = type({ 'query?': 'string <= 200' })
-const InstallSchema = type({ id: 'string <= 48' })
+const InstallSchema = type({ id: 'string <= 48', 'version?': 'string <= 80' })
 const SetupSchema = type({
   action: "'status' | 'install' | 'login' | 'cancel'",
 })
@@ -34,9 +39,9 @@ const uiMeta = {
 const staticTools: Tool[] = [
   {
     name: 'studio_search',
-    title: 'Discover local facets',
+    title: 'Discover registry facets',
     description:
-      'Find an interactive workflow for the user’s knowledge-work task. Proactively use this when someone asks to organize meeting notes, capture decisions, assign owners, or track follow-ups, even if they have not mentioned tools or Studio. Derive concise task keywords from their context, pass them as query, and show the matching inline card. Example: “Can you help me organize my meeting notes?” becomes query “meeting notes actions”. This searches only the configured local catalogue, not the public registry. Search does not install anything.',
+      'Find an interactive workflow for the user’s knowledge-work task. Proactively use this when someone asks to organize meeting notes, capture decisions, assign owners, or track follow-ups, even if they have not mentioned tools or Studio. Derive concise task keywords from their context, pass them as query, and show the matching inline card. Example: “Can you help me organize my meeting notes?” becomes query “meeting notes actions”. This searches the authenticated @agentfacets registry through the Facet CLI and shows supported app packages, currently Meeting to Action. Search does not install anything.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -44,7 +49,7 @@ const staticTools: Tool[] = [
           type: 'string',
           maxLength: 200,
           description:
-            'Two to five task keywords from the user’s request, such as meeting notes actions or meeting minutes follow-ups. The query is echoed into the search field. Omit or leave empty only to browse all local entries.',
+            'Two to five task keywords from the user’s request, such as meeting notes actions or meeting minutes follow-ups. The query is echoed into the search field. Omit or leave empty only to browse supported registry entries.',
         },
       },
       additionalProperties: false,
@@ -53,12 +58,19 @@ const staticTools: Tool[] = [
   },
   {
     name: 'studio_install',
-    title: 'Install a local facet',
+    title: 'Install a registry facet',
     description:
-      'Install a configured local facet only after the user explicitly chooses and approves installation in the inline workflow. Never install merely because search found a match. After installation, call the returned app.openTool to open its UI.',
+      'Install an exact registry version only after the user explicitly chooses and approves installation in the inline workflow. Never install merely because search found a match. After installation, call the returned app.openTool to open its UI.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string', maxLength: 48 } },
+      properties: {
+        id: { type: 'string', maxLength: 48 },
+        version: {
+          type: 'string',
+          maxLength: 80,
+          description: 'Exact version shown in the approved search result.',
+        },
+      },
       required: ['id'],
       additionalProperties: false,
     },
@@ -121,11 +133,23 @@ function bridgeTool(entry: CatalogEntry): Tool {
 
 /** Construct one connected Studio with a fixed catalogue and consuming project. @param options Trusted process configuration. @returns Raw MCP server with namespaced child capabilities. */
 export async function createStudio(options: {
-  catalogFile: string
+  catalogFile?: string
   project: string
   html: string
 }): Promise<Server> {
-  const entries = await loadCatalog(options.catalogFile)
+  const registry = !options.catalogFile
+  const entries = options.catalogFile
+    ? await loadCatalog(options.catalogFile)
+    : [registryEntry()]
+  if (registry) {
+    const restored = registryEntryFromLock(
+      await Bun.file(resolve(options.project, 'facets.lock'))
+        .json()
+        .catch(() => undefined),
+    )
+    if (restored) entries[0] = restored
+  }
+  const offered = new Map<string, CatalogEntry>()
   const bridgeTools = entries.map(bridgeTool)
   if (
     new Set([...staticTools, ...bridgeTools].map((tool) => tool.name)).size !==
@@ -136,14 +160,14 @@ export async function createStudio(options: {
   const apps = new Map<string, AppProxy>()
   const pending = new Map<string, Promise<AppProxy>>()
   const server = new Server(
-    { name: 'facet-studio-local', version: '0.1.3' },
+    { name: 'facet-studio', version: '0.1.4' },
     {
       capabilities: {
         tools: { listChanged: true },
         resources: { listChanged: true },
       },
       instructions:
-        'When a user asks for help with knowledge work, look for a matching interactive workflow without requiring them to name Studio or a tool. For example, “Can you help me organize my meeting notes?” should lead to studio_search with concise query keywords such as “meeting notes actions”. Use task nouns and useful synonyms from their context, not generic filler such as help or organize. The first search call carries this context and prefills the inline search field. Show relevant results and let the user choose; never auto-install. This prototype searches a fixed local catalogue, not the public registry. Stable app bridge tools are intentionally advertised before installation and do not prove installed status; trust search item.installed. After explicit approved installation, use returned app.openTool in the same connection without a per-facet restart.',
+        'When a user asks for help with knowledge work, look for a matching interactive workflow without requiring them to name Studio or a tool. For example, “Can you help me organize my meeting notes?” should lead to studio_search with concise query keywords such as “meeting notes actions”. Use task nouns and useful synonyms from their context, not generic filler such as help or organize. The first search call carries this context and prefills the inline search field. Show relevant results and let the user choose; never auto-install. This prototype searches the authenticated @agentfacets registry through the existing CLI OAuth session and currently supports the Meeting to Action app. Results use published versions; no Meeting UI or server is bundled in Studio. Stable app bridge tools are intentionally advertised before installation and do not prove installed status; trust search item.installed. After explicit approved installation, use returned app.openTool in the same connection without a per-facet restart.',
     },
   )
   let closing = false
@@ -168,8 +192,12 @@ export async function createStudio(options: {
       description: entry.description,
       version: entry.version,
       source: entry.source,
-      installed: Boolean(app),
-      ...(app ? { openTool: stableTool(entry.id) } : {}),
+      installed: Boolean(
+        app && app.installed.descriptor.version === entry.version,
+      ),
+      ...(app && app.installed.descriptor.version === entry.version
+        ? { openTool: stableTool(entry.id) }
+        : {}),
     }
   }
 
@@ -226,20 +254,29 @@ export async function createStudio(options: {
     entry: CatalogEntry,
     signal: AbortSignal,
   ): Promise<AppProxy> {
-    const current = pending.get(entry.id)
+    const key = `${entry.id}@${entry.version}`
+    const current = pending.get(key)
     if (current) return current
     const combined = AbortSignal.any([signal, lifetime.signal])
     const operation = installQueue
       .catch(() => {})
       .then(async () => {
         if (combined.aborted) throw new Error('Installation was cancelled.')
-        await installLocalFacet(entry.sourcePath, options.project, combined)
+        if (entry.source === 'registry')
+          await installRegistryFacet(
+            entry.name,
+            entry.version,
+            options.project,
+            combined,
+          )
+        else
+          await installLocalFacet(entry.sourcePath, options.project, combined)
         if (combined.aborted) throw new Error('Installation was cancelled.')
         return activate(entry)
       })
-      .finally(() => pending.delete(entry.id))
+      .finally(() => pending.delete(key))
     installQueue = operation
-    pending.set(entry.id, operation)
+    pending.set(key, operation)
     return operation
   }
 
@@ -254,7 +291,7 @@ export async function createStudio(options: {
     resources: [
       {
         uri: studioUri,
-        name: 'Facet Studio local catalogue',
+        name: 'Facet Studio registry',
         mimeType: RESOURCE_MIME_TYPE,
       },
       ...entries.map((entry) => ({
@@ -287,7 +324,7 @@ export async function createStudio(options: {
       if (entry) {
         const installed = apps.get(entry.id)
         if (!installed)
-          throw new Error('Install this local facet before opening its app.')
+          throw new Error('Install this registry facet before opening its app.')
         const open = installed.tools.find(
           (tool) => tool.name === installed.openTool,
         )
@@ -393,12 +430,20 @@ export async function createStudio(options: {
           if (parsed instanceof type.errors)
             throw new Error('Enter a search of at most 200 characters.')
           const query = parsed.query ?? ''
-          result = {
-            query,
-            items: entries
-              .filter((entry) => matchesIntent(entry, query))
-              .map(item),
-          }
+          const found = registry
+            ? await searchRegistry(
+                query,
+                AbortSignal.any([
+                  extra.signal,
+                  lifetime.signal,
+                  AbortSignal.timeout(30000),
+                ]),
+              )
+            : entries.filter((entry) => matchesIntent(entry, query))
+          for (const entry of found)
+            offered.set(`${entry.id}@${entry.version}`, entry)
+          if (offered.size > 100) offered.clear()
+          result = { query, items: found.map(item) }
         } else if (request.params.name === 'studio_setup') {
           const parsed = SetupSchema(args)
           if (parsed instanceof type.errors)
@@ -407,10 +452,14 @@ export async function createStudio(options: {
         } else if (request.params.name === 'studio_install') {
           const parsed = InstallSchema(args)
           if (parsed instanceof type.errors)
-            throw new Error('Choose a local catalogue entry.')
-          const entry = entries.find((entry) => entry.id === parsed.id)
+            throw new Error('Choose a returned registry entry and version.')
+          const entry = registry
+            ? offered.get(`${parsed.id}@${parsed.version}`)
+            : entries.find((entry) => entry.id === parsed.id)
           if (!entry)
-            throw new Error('The selected local facet is unavailable.')
+            throw new Error(
+              'The selected registry version is unavailable. Search again before installing.',
+            )
           const app = await install(entry, extra.signal)
           result = {
             item: item(entry),
@@ -444,7 +493,7 @@ export async function createStudio(options: {
           content: [
             {
               type: 'text',
-              text: 'Studio could not complete the request. Check CLI setup and the selected local facet, then retry.',
+              text: 'Studio could not complete the request. Check Facet CLI login, organization access, and the registry search response, then retry.',
             },
           ],
         }
@@ -472,7 +521,7 @@ export async function createStudio(options: {
   } catch {
     await dispose()
     throw new Error(
-      'An installed app could not be restored. Check the local catalogue and reinstall it.',
+      'An installed app could not be restored. Check the installation receipt and reinstall it.',
     )
   }
   return server
@@ -480,10 +529,6 @@ export async function createStudio(options: {
 
 if (import.meta.main) {
   const server = await createStudio({
-    catalogFile: resolve(
-      process.env.FACET_STUDIO_CATALOG ??
-        resolve(import.meta.dir, 'catalog.json'),
-    ),
     project: resolve(process.env.FACET_STUDIO_PROJECT ?? './studio-project'),
     html: await Bun.file(resolve(import.meta.dir, 'studio.html')).text(),
   })

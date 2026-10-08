@@ -13,7 +13,7 @@ import hostSetup from '../facet/skills/meeting-to-action/references/host-setup.m
 }
 
 /** Locate the CLI without changing shell configuration. @returns Executable path or safe failure. */
-function cliPath(): string {
+export function cliPath(): string {
   const path =
     Bun.which('facet') ??
     Bun.which(
@@ -219,4 +219,20 @@ export async function installLocalFacet(
   const destination = localSourcePath(source, project)
   await stageSource(source, destination, signal)
   await runFacetInstall(cliPath(), destination, project, signal)
+}
+
+/** Install an approved exact registry identity through the authenticated CLI. @param name Scoped package. @param version Published exact version. @param project Consuming project. @param signal Cancellation. @returns Successful CLI completion. */
+export async function installRegistryFacet(
+  name: string,
+  version: string,
+  project: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (
+    !/^@agentfacets\/[a-z0-9-]+$/.test(name) ||
+    !/^\d+\.\d+\.\d+$/.test(version)
+  )
+    throw new Error('Invalid registry identity.')
+  await mkdir(project, { recursive: true })
+  await runFacetInstall(cliPath(), `${name}@${version}`, project, signal)
 }

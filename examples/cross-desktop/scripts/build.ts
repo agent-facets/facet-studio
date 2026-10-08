@@ -1,9 +1,6 @@
-import { mkdir, copyFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { mkdir, copyFile, rm } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
-import manifest from '../facet/facet.json'
 import studioManifest from '../studio-facet/facet.json'
-import meetingDescriptor from '../facet/skills/meeting-to-action/app.json'
 
 const root = resolve(import.meta.dir, '..')
 await mkdir(resolve(root, 'dist'), { recursive: true })
@@ -48,11 +45,7 @@ for (const file of ['server.js', 'view.html'])
     resolve(root, 'facet/skills/meeting-to-action/assets', file),
   )
 
-await buildUi(
-  'src/studio-ui.tsx',
-  'studio.html',
-  'Facet Studio · Local catalogue',
-)
+await buildUi('src/studio-ui.tsx', 'studio.html', 'Facet Studio · Registry')
 const studio = await Bun.build({
   entrypoints: [resolve(root, 'src/studio-server.ts')],
   outdir: resolve(root, 'dist'),
@@ -60,41 +53,15 @@ const studio = await Bun.build({
   minify: true,
 })
 if (!studio.success) throw new Error(studio.logs.join('\n'))
-const cataloguePath = `c/${createHash('sha256').update(meetingDescriptor.id).digest('hex').slice(0, 8)}`
-const catalogRoot = resolve(root, 'dist', cataloguePath)
-await mkdir(catalogRoot, { recursive: true })
-await copyFile(
-  resolve(root, 'facet/facet.json'),
-  resolve(catalogRoot, 'facet.json'),
-)
-for (const [name, skill] of Object.entries(manifest.skills)) {
-  for (const file of ['SKILL.md', ...skill.files]) {
-    const target = resolve(catalogRoot, 'skills', name, file)
-    await mkdir(dirname(target), { recursive: true })
-    await copyFile(resolve(root, 'facet/skills', name, file), target)
-  }
-}
-await Bun.write(
-  resolve(root, 'dist/catalog.json'),
-  JSON.stringify(
-    {
-      entries: [
-        {
-          id: meetingDescriptor.id,
-          source: 'local',
-          path: cataloguePath,
-        },
-      ],
-    },
-    null,
-    2,
-  ),
-)
 console.log(
-  'Built portable meeting companions and Studio with its configured local catalogue.',
+  'Built Meeting companions separately; Studio contains no bundled Meeting UI or server.',
 )
 
 const studioAssets = resolve(root, 'studio-facet/skills/facet-studio/assets')
+for (const directory of [resolve(root, 'dist'), studioAssets]) {
+  await rm(resolve(directory, 'c'), { recursive: true, force: true })
+  await rm(resolve(directory, 'catalog.json'), { force: true })
+}
 for (const [name, skill] of Object.entries(studioManifest.skills)) {
   for (const file of skill.files.filter((file) => file.startsWith('assets/'))) {
     if (Buffer.byteLength(`skills/${name}/${file}`) > 100)
@@ -107,6 +74,4 @@ for (const [name, skill] of Object.entries(studioManifest.skills)) {
     await copyFile(resolve(root, 'dist', path), target)
   }
 }
-console.log(
-  'Studio facet companions include its UI, server, and complete local catalogue fixture.',
-)
+console.log('Studio facet companions contain only its registry UI and server.')

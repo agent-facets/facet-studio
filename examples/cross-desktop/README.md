@@ -1,35 +1,31 @@
-# Facet Studio local catalogue
+# Facet Studio registry apps
 
 **Run the example:** Follow the [Example runbook](DEMO.md) for setup, host connection, the five-minute walkthrough, and recovery steps.
 
-A Bun prototype that discovers and installs facets, then opens their packaged apps through one connected MCP server. Studio has its own installable facet containing its UI, server and complete local catalogue. The catalogue currently contains the real Meeting to Action facet and is explicitly local; it does not search the public registry.
+A Bun prototype that searches the authenticated @agentfacets registry, installs an exact published version through the Facet CLI, and opens the downloaded app in the same MCP connection. Studio carries only its own UI and server. Meeting to Action's CopilotKit UI and MCP server are delivered by its separate facet package, not embedded in Studio.
 
 The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit registered frontend tools, rendered human approval components, and shared AG-UI state. Search runs through a frontend handler. Installation and saving first await the actual CopilotKit human-in-the-loop renderer; declining produces no install/save call. Approved handlers use the existing MCP transport adapter. No separate model API or model credential is used.
 
-The source discovery update is 0.1.2. It retains the query contract, adds intent keyword/synonym matching, and clarifies that a predeclared app bridge does not imply installation. Both private registry packages are published as 0.1.2.
+Studio source 0.1.4 replaces the bundled local catalogue with real registry access. The supported app allowlist currently contains Meeting to Action; other registry packages are not offered for installation by this prototype. The CLI owns OAuth refresh and credentials, which never enter the MCP result or UI.
 
 ## Recording
 
-40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
+Historical 0.1.2 local-catalogue recording: 40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
 
 ![Natural request, contextual search, approved installation, meeting notes, host action plan, Rae edit, and approved save in Claude Desktop](docs/media/meeting-workflow.gif)
 
 [Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
 
-The Studio source 0.1.3 patch (with unchanged Meeting to Action 0.1.2) keeps the Open request in plain language and supplies operation routing through optional acknowledged model context. If the host cannot accept that context, the natural request relies on the installation result already in the conversation. Refresh the built Studio assets and reconnect before validating the patch; the published release and native evidence below remain 0.1.2 until updated.
+## Registry packages
 
-## Private registry packages
-
-The private 0.1.2 releases are [@agentfacets/facet-studio](https://agentfacets.io/facets/@agentfacets/facet-studio) and [@agentfacets/meeting-to-action](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Sign in with an account granted access to the `@agentfacets` organization, then install the selected package in a consuming project. Anonymous requests cannot access these packages:
+Sign in with an account granted access to @agentfacets. After the Studio 0.1.4 release is published:
 
 ```sh
 facet login
-facet add @agentfacets/facet-studio@0.1.2
-# Optional direct worksheet package:
-facet add @agentfacets/meeting-to-action@0.1.2
+facet add @agentfacets/facet-studio@0.1.4
 ```
 
-Studio still ships an explicitly local catalogue containing the meeting package. Its discovery screen installs that bundled source through the real CLI; it does not claim registry search. The unscoped app descriptor IDs and companion directory names remain stable routing identities, separate from scoped registry package names. Both packages carry their own server/UI assets; Studio also carries the complete meeting source fixture.
+The UI searches actual CLI registry results, displays their exact version, and installs that approved version. Meeting to Action has its own [source repository](https://github.com/agent-facets/meeting-to-action) and [registry package](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Its standalone release is 0.1.3; search uses the version currently returned by the registry rather than assuming a version. [Studio registry package](https://agentfacets.io/facets/@agentfacets/facet-studio).
 
 ## Discover, install and open in one host
 
@@ -40,29 +36,30 @@ bun run build
 bun dist/studio-server.js
 ```
 
-Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant, “Can you find me a facet to organize meeting notes into action items?” The server instructions and search metadata guide the host to search concise task keywords, which prefill the inline card. Tool selection remains host-dependent; the runbook includes a technical troubleshooting fallback. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
+Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant, “Can you find me a facet to organize meeting notes into action items?” The server instructions and search metadata guide the host to search concise task keywords, which prefill the inline card. Tool selection remains host-dependent; the runbook includes a technical troubleshooting fallback. Search the registry, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
 
-`FACET_STUDIO_PROJECT` configures the consuming project at server launch (default `./studio-project`). `FACET_STUDIO_CATALOG` optionally selects trusted local catalogue configuration. Neither path is accepted from the app UI. Catalogue entries declare local source paths and stable IDs; the build ships the sample source beneath `dist/c`.
+`FACET_STUDIO_PROJECT` selects a writable consuming project at startup (default `./studio-project`). Keep the existing Facet home so the CLI can use its login and installed adapters. The executable defaults to authenticated registry discovery; it does not honor the old FACET_STUDIO_CATALOG environment override. Explicit local catalogue injection remains only for unit fixtures.
 
-To install Studio itself, use `facet add` with a local source inside the consuming project, or call the generic installer in the supplied smoke script. Run the installed `skills/facet-studio/assets/studio-server.js` companion. Its neighbouring `studio.html`, `catalog.json` and catalogue files are declared skill companions and travel with it. Bun and a compatible Facet adapter remain prerequisites.
+For a portable install, run the installed `skills/facet-studio/assets/studio-server.js` alongside its declared `studio.html`. Bun and a compatible Facet adapter are required. Refresh the installed Studio package, reconnect its host connection, and create a fresh card to load updated HTML.
 
 ```sh
 facet build studio-facet --verify
-facet build facet --verify
-bun scripts/studio-smoke.ts
+bun scripts/registry-smoke.ts
 ```
 
-The Studio smoke gate installs both bundles with the real CLI, launches installed Studio from `/tmp`, verifies the bundled sample starts uninstalled even when Studio is installed in that same consuming project, then verifies search, install, tool/resource list-change notifications, cached stable-tool app opening, host plan updates and UI reads before refreshing the tool list. It also checks concurrent installs of two distinct local entries preserve both lock records and keep their primary UI resources isolated.
+The live smoke uses a fresh temporary project and existing CLI authentication. It searches the real registry, installs the exact returned package version, opens the cached predeclared bridge, verifies registry provenance and companion hashes, and compares the served app resource byte-for-byte with the downloaded installed HTML. It never uses a bundled Meeting source.
 
-The small `app.json` contract is a prototype skill companion, not a new Facet manifest field. It declares schemaVersion, app ID, version, Bun runtime, relative JavaScript entrypoint and open tool. Studio requires matching Facet lock identity and companion hashes before starting an app. Adapter-transformed SKILL.md is checked against the source hash in the CLI lock; executable/UI companions must match installed bytes. App IDs are unique in a catalogue, tools/resources are namespaced, and child/tool startup and CLI work are bounded and cancelled on disconnect.
+The current CLI offers text search output rather than JSON. Studio parses its exact bounded row format, fails on malformed or incomplete output, searches at most three intent keywords, and exposes only its supported @agentfacets app. This is an explicit compatibility limit. Login/network/permission errors never fall back to a local result.
 
-Studio predeclares one generic `studio_app_<hash>` tool per configured catalogue entry. Calling it with `{}` opens that installed app; `{"tool":"original child name","arguments":{...}}` invokes an allowlisted child operation. Original schemas appear in the open result for the assistant and are validated by the child. The wrapper itself has a generic host input schema; dynamic tools still retain their original schemas. The installed UI uses routing metadata to send UI calls through the predeclared tool. Before requesting a plan, it supplies exact routing and the original schema through acknowledged model context when the host supports it, with a three-second timeout. The visible message contains only the meeting request, title and notes. If context updates are unsupported or rejected, the natural request relies on routing already supplied by the open result. Verified installed worksheets start at the meeting step; returned host proposals still open Review. Browser and direct standalone routing remain supported.
+The small `app.json` contract is a prototype skill companion, not a new Facet manifest field. It declares schemaVersion, app ID, version, Bun runtime, relative JavaScript entrypoint and open tool. Studio requires exact package/version, registry origin, and every executable/UI/reference companion hash to match the CLI lock before starting an app. SKILL.md must have a valid canonical receipt and exist as a regular file; its installed bytes are adapter-transformed and are not compared to the canonical hash. Local receipts are audit records, not signatures against a malicious local user. App IDs are unique in a catalogue, tools/resources are namespaced, and child/tool startup and CLI work are bounded and cancelled on disconnect.
 
-Each bridge has a distinct stable primary-resource URI bound to the descriptor's open tool. Resource reads and calls fail before verified installation; source assets are never served as installed apps. This prototype supports one primary UI per app and a fixed catalogue at connection startup. Native Claude rendered discovery and completed installation but did not refresh its tool list after receiving list-change notifications. The stable bridge avoids that dependency. Native results and their version limits are recorded below.
+Studio predeclares a stable `studio_app_<hash>` tool for its supported Meeting app. Calling it with `{}` opens that installed app; `{"tool":"original child name","arguments":{...}}` invokes an allowlisted child operation. Original schemas appear in the open result for the assistant and are validated by the child. The wrapper itself has a generic host input schema; dynamic tools still retain their original schemas. The installed UI uses routing metadata to send UI calls through the predeclared tool. Before requesting a plan, it supplies exact routing and the original schema through acknowledged model context when the host supports it, with a three-second timeout. The visible message contains only the meeting request, title and notes. If context updates are unsupported or rejected, the natural request relies on routing already supplied by the open result. Verified installed worksheets start at the meeting step; returned host proposals still open Review. Browser and direct standalone routing remain supported.
+
+Each bridge has a distinct stable primary-resource URI bound to the descriptor's open tool. Resource reads and calls fail before verified installation; source assets are never served as installed apps. This prototype supports one primary UI per app and a fixed app-bridge allowlist at connection startup. Native Claude rendered discovery and completed installation but did not refresh its tool list after receiving list-change notifications. The stable bridge avoids that dependency. Native results and their version limits are recorded below.
 
 For a fresh-project walkthrough:
 
-1. Configure the Studio server once with a fresh writable `FACET_STUDIO_PROJECT`, then ask for the local catalogue.
+1. Configure the Studio server once with a fresh writable `FACET_STUDIO_PROJECT`, then ask for a registry facet.
 2. Install Meeting to Action in the inline Studio card. Choose Open and send its request if the host places it in the composer. Keep the same host connection running.
 3. The installed worksheet opens at Capture notes. Enter a title and notes, choose Ask assistant, and send the plain-language request if prompted.
 4. Review the assistant's returned worksheet, correct owners or dates, and choose Save. Reopening through Studio reads the saved server-session state.
@@ -115,7 +112,7 @@ facet build studio-facet --emit-manifest
 bun scripts/archive-smoke.ts /path/to/facets/packages/protocol/src/index.ts
 ```
 
-This checks the built archive's paths, membership and hashes with the exported protocol verifier, and prints expanded byte counts. It does not claim compliance with registry size limits. Studio uses short hashed catalogue directories, and the build rejects companion paths longer than 100 bytes to avoid truncation in the current archive writer.
+This checks the built archive's paths, membership and hashes with the exported protocol verifier, and prints expanded byte counts. It does not claim compliance with registry size limits. Studio no longer carries nested Meeting assets, and the build rejects companion paths longer than 100 bytes to avoid truncation in the current archive writer.
 
 The server bundle embeds all runtime dependencies and companion instructions. The installed server requires Bun but neither `node_modules` nor the source checkout. To verify an installed companion:
 
@@ -125,7 +122,7 @@ bun scripts/smoke.ts /absolute/path/to/installed/skills/meeting-to-action/assets
 
 The smoke client launches the server with `/tmp` as its working directory, lists four tools, reads the inline app resource, accepts a host plan, and rejects an invalid plan.
 
-The 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mounted hooks, core handlers and rendered buttons, plus the native Claude walkthrough below.
+Historical verification: the 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mounted hooks, core handlers and rendered buttons, plus the native Claude walkthrough below.
 
 ## Verified surfaces
 
