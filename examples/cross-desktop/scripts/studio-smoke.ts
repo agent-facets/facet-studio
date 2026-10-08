@@ -18,6 +18,7 @@ import studioManifest from '../studio-facet/facet.json'
 import studioDescriptor from '../studio-facet/skills/facet-studio/app.json'
 import { samplePlan } from '../src/model'
 import { stableTool, stableResource } from '../src/studio-server'
+import { createHash } from 'node:crypto'
 
 const root = resolve(import.meta.dir, '..')
 const InstallResult = type({
@@ -229,9 +230,20 @@ const concurrentFixture = await mkdtemp(join(tmpdir(), 'studio-concurrent-'))
 const entries = []
 for (const id of ['first-app', 'second-app']) {
   const source = join(concurrentFixture, id)
-  await cp(join(root, 'dist/catalogue/meeting-to-action'), source, {
-    recursive: true,
-  })
+  await cp(
+    join(
+      root,
+      'dist/c',
+      createHash('sha256')
+        .update('meeting-to-action')
+        .digest('hex')
+        .slice(0, 8),
+    ),
+    source,
+    {
+      recursive: true,
+    },
+  )
   const manifest = (await Bun.file(join(source, 'facet.json')).json()) as {
     name: string
     skills: Record<string, { description: string; files: string[] }>

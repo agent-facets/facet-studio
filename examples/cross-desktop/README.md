@@ -28,7 +28,7 @@ bun dist/studio-server.js
 
 Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant to call `studio_search`. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
 
-`FACET_STUDIO_PROJECT` configures the consuming project at server launch (default `./studio-project`). `FACET_STUDIO_CATALOG` optionally selects trusted local catalogue configuration. Neither path is accepted from the app UI. Catalogue entries declare local source paths and stable IDs; the build ships the sample source beneath `dist/catalogue`.
+`FACET_STUDIO_PROJECT` configures the consuming project at server launch (default `./studio-project`). `FACET_STUDIO_CATALOG` optionally selects trusted local catalogue configuration. Neither path is accepted from the app UI. Catalogue entries declare local source paths and stable IDs; the build ships the sample source beneath `dist/c`.
 
 To install Studio itself, use `facet add` with a local source inside the consuming project, or call the generic installer in the supplied smoke script. Run the installed `skills/facet-studio/assets/studio-server.js` companion. Its neighbouring `studio.html`, `catalog.json` and catalogue files are declared skill companions and travel with it. Bun and a compatible Facet adapter remain prerequisites.
 
@@ -92,6 +92,16 @@ facet build facet
 ```
 
 The build generates `facet/skills/meeting-to-action/assets/server.js` and `view.html`. `facet.json` declares them as skill companions. `facet add ./facet` installs those files; a raw `.facet` archive is not the local-source argument.
+
+Before publishing, build and verify the actual archives as well as the loose source. The offline gate accepts the existing Facet protocol module from a development checkout:
+
+```sh
+facet build facet --emit-manifest
+facet build studio-facet --emit-manifest
+bun scripts/archive-smoke.ts /path/to/facets/packages/protocol/src/index.ts
+```
+
+This checks the built archive's paths, membership and hashes with the exported protocol verifier, and prints expanded byte counts. It does not claim compliance with registry size limits. Studio uses short hashed catalogue directories, and the build rejects companion paths longer than 100 bytes to avoid truncation in the current archive writer.
 
 The server bundle embeds all runtime dependencies and companion instructions. The installed server requires Bun but neither `node_modules` nor the source checkout. To verify an installed companion:
 

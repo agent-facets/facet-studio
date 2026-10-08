@@ -11,12 +11,12 @@
         "assets/studio-server.js",
         "assets/studio.html",
         "assets/catalog.json",
-        "assets/catalogue/meeting-to-action/facet.json",
-        "assets/catalogue/meeting-to-action/skills/meeting-to-action/SKILL.md",
-        "assets/catalogue/meeting-to-action/skills/meeting-to-action/app.json",
-        "assets/catalogue/meeting-to-action/skills/meeting-to-action/assets/server.js",
-        "assets/catalogue/meeting-to-action/skills/meeting-to-action/assets/view.html",
-        "assets/catalogue/meeting-to-action/skills/meeting-to-action/references/host-setup.md"
+        "assets/c/7191f44f/facet.json",
+        "assets/c/7191f44f/skills/meeting-to-action/SKILL.md",
+        "assets/c/7191f44f/skills/meeting-to-action/app.json",
+        "assets/c/7191f44f/skills/meeting-to-action/assets/server.js",
+        "assets/c/7191f44f/skills/meeting-to-action/assets/view.html",
+        "assets/c/7191f44f/skills/meeting-to-action/references/host-setup.md"
       ]
     }
   }

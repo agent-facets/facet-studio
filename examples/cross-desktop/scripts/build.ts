@@ -1,4 +1,5 @@
 import { mkdir, copyFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { resolve, dirname } from 'node:path'
 import manifest from '../facet/facet.json'
 import studioManifest from '../studio-facet/facet.json'
@@ -59,7 +60,8 @@ const studio = await Bun.build({
   minify: true,
 })
 if (!studio.success) throw new Error(studio.logs.join('\n'))
-const catalogRoot = resolve(root, 'dist/catalogue', meetingDescriptor.id)
+const cataloguePath = `c/${createHash('sha256').update(meetingDescriptor.id).digest('hex').slice(0, 8)}`
+const catalogRoot = resolve(root, 'dist', cataloguePath)
 await mkdir(catalogRoot, { recursive: true })
 await copyFile(
   resolve(root, 'facet/facet.json'),
@@ -80,7 +82,7 @@ await Bun.write(
         {
           id: meetingDescriptor.id,
           source: 'local',
-          path: `catalogue/${meetingDescriptor.id}`,
+          path: cataloguePath,
         },
       ],
     },
@@ -93,8 +95,12 @@ console.log(
 )
 
 const studioAssets = resolve(root, 'studio-facet/skills/facet-studio/assets')
-for (const skill of Object.values(studioManifest.skills)) {
+for (const [name, skill] of Object.entries(studioManifest.skills)) {
   for (const file of skill.files.filter((file) => file.startsWith('assets/'))) {
+    if (Buffer.byteLength(`skills/${name}/${file}`) > 100)
+      throw new Error(
+        'A Studio companion exceeds the portable archive path limit.',
+      )
     const path = file.slice('assets/'.length)
     const target = resolve(studioAssets, path)
     await mkdir(dirname(target), { recursive: true })
