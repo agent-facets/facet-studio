@@ -31,9 +31,17 @@ The small `app.json` contract is a prototype skill companion, not a new Facet ma
 
 Studio predeclares one generic `studio_app_<hash>` tool per configured catalogue entry. Calling it with `{}` opens that installed app; `{"tool":"original child name","arguments":{...}}` invokes an allowlisted child operation. Original schemas appear in the open result for the assistant and are validated by the child. The wrapper itself has a generic host input schema; dynamic tools still retain their original schemas. The installed UI uses routing metadata to send UI calls through the predeclared tool. Before requesting a plan, it supplies exact routing and the original schema through acknowledged model context when the host supports it, with a three-second timeout. The visible message contains only the meeting request, title and notes. If context updates are unsupported or rejected, the natural request relies on routing already supplied by the open result. Verified installed worksheets start at the meeting step; returned host proposals still open Review. Browser and direct standalone routing remain supported.
 
-Each bridge has a distinct stable primary-resource URI bound to the descriptor's open tool. Resource reads and calls fail before verified installation; source assets are never served as installed apps. This prototype supports one primary UI per app and a fixed catalogue at connection startup. Native Claude rendered discovery and completed installation but did not refresh its tool list after receiving list-change notifications. The stable bridge avoids that dependency. The parent verified the complete stable flow in Claude without restarting the connection: discovery, installation, installed worksheet opening, host proposal, title preservation, missing-date handling, and editing/saving. Codex inline rendering is supported by the user-provided image; Codex interaction has not been verified.
+Each bridge has a distinct stable primary-resource URI bound to the descriptor's open tool. Resource reads and calls fail before verified installation; source assets are never served as installed apps. This prototype supports one primary UI per app and a fixed catalogue at connection startup. Native Claude rendered discovery and completed installation but did not refresh its tool list after receiving list-change notifications. The stable bridge avoids that dependency. Native results and their version limits are recorded below.
 
-The revised natural-language message and setup skipping still need a native rerun. The earlier complete Claude verification used the stable bridge before this presentation change.
+For a fresh-project walkthrough:
+
+1. Configure the Studio server once with a fresh writable `FACET_STUDIO_PROJECT`, then ask for the local catalogue.
+2. Install Meeting to Action in the inline Studio card. Choose Open and send its request if the host places it in the composer. Keep the same host connection running.
+3. The installed worksheet opens at Capture notes. Enter a title and notes, choose Ask assistant, and send the plain-language request if prompted.
+4. Review the assistant's returned worksheet, correct owners or dates, and choose Save. Reopening through Studio reads the saved server-session state.
+5. Choose Export Markdown to keep a file before ending the server session.
+
+Save updates the live child server's shared worksheet; it does not write a durable plan file. A server restart loses that session state. Export Markdown creates the portable file through the host/browser download flow. CLI installation persists the app package separately from the plan.
 
 ## Run the browser preview
 
@@ -50,9 +58,9 @@ The setup step discovers the Facet CLI and exposes explicit install and sign-in 
 
 “Install this facet” calls the real CLI against a fixed local source, writes the consuming project under `meeting-to-action-project/`, and verifies that server/UI companions were materialized. At least one compatible Facet adapter must already be installed; inspect with `facet adapter list` and install the adapter for your host if needed. `FACET_EXAMPLE_PROJECT` sets the consuming directory at server launch, never through browser input.
 
-## Open inside an assistant
+## Optional direct worksheet connection
 
-After building, configure a stdio MCP server with the absolute Bun executable and the absolute path to `dist/server.js`. Ask the assistant to call `meeting_open`.
+The Studio workflow above is the discovery-to-install entry point. To exercise the worksheet independently, configure a separate stdio MCP server with the absolute Bun executable and the absolute path to `dist/server.js`, then ask the assistant to call `meeting_open`.
 
 After installing the facet, use its installed `skills/meeting-to-action/assets/server.js` companion instead. The example installer writes `claude-desktop.example.json` and `codex.example.toml` in the consuming project with resolved paths. Review and merge the applicable snippet into the host configuration, then reconnect. The installer does not modify global desktop settings.
 
@@ -85,8 +93,10 @@ The smoke client launches the server with `/tmp` as its working directory, lists
 - Browser: sample loading, owner editing, save, and honest host-unavailable state exercised through the browser UI.
 - MCP protocol: stdio tools, UI resource, valid host plan and invalid plan exercised with the SDK client.
 - Packaging: fresh local CLI install and repeated install succeeded; installed server passed the same smoke check outside the source checkout.
-- Native Claude Desktop: inline rendering and the assistant round trip were verified. The worksheet composed a notes request, the request was sent, and the returned meeting_plan proposal showed Maya due 2026-10-12 while Leo’s unspecified date remained blank. Claude rendered the proposal in a new worksheet card.
-- Native Codex: inline rendering verified by the user-provided image. Interaction and assistant round trips remain unverified.
+| Native surface | Verified evidence | Remaining limit |
+|---|---|---|
+| Claude Desktop, final presentation build `1269633` | Fresh-project search, inline install, stable Open without a post-install restart, direct Capture notes entry, and a submitted plain-language request with no generated routing or schema text. The host returned an inline Review plan with Pilot readiness preserved, Maya due October 12, Leo’s date blank, and feedback unassigned. Native editing to Rae and Save produced “Plan saved for this server session.” | Verified in this local Claude setup with the bundled catalogue. Other host versions and catalogues were not exercised. |
+| Codex, existing v2 connection | User-provided inline rendering image; user changed Maya to Rae and reported Save succeeded. An independent native stable-Open readback returned Rae with host provenance and edited state. | The complete meeting-card screenshot was not inspected. A new connection running final `1269633` and its assistant request flow have not been verified. |
 
 The local AG-UI adapter forwards validated host state and emits lifecycle events. It does not generate sample content on behalf of an assistant. CopilotKit's headless/context exports keep the self-contained resource within the MCP SDK's default message limit. The current core registration API is named `agents__unsafe_dev_only`; this is a prototype integration, with exact dependency versions recorded in the lockfile.
 
