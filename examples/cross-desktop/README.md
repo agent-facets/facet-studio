@@ -8,6 +8,14 @@ The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit re
 
 The source discovery update is 0.1.2. It retains the query contract, adds intent keyword/synonym matching, and clarifies that a predeclared app bridge does not imply installation. Both private registry packages are published as 0.1.2.
 
+## Recording
+
+40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
+
+![Natural request, contextual search, approved installation, meeting notes, host action plan, Rae edit, and approved save in Claude Desktop](docs/media/meeting-workflow.gif)
+
+[Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
+
 ## Private registry packages
 
 The private 0.1.2 releases are [@agentfacets/facet-studio](https://agentfacets.io/facets/@agentfacets/facet-studio) and [@agentfacets/meeting-to-action](https://agentfacets.io/facets/@agentfacets/meeting-to-action). Sign in with an account granted access to the `@agentfacets` organization, then install the selected package in a consuming project. Anonymous requests cannot access these packages:
@@ -125,7 +133,7 @@ The 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mo
 
 | Native surface | Verified evidence | Remaining limit |
 |---|---|---|
-| Claude Desktop, 0.1.2 discovery | A fresh chat with the replacement `facet-studio` connection selected contextual search from “Can you find me a facet to organize meeting notes into action items?” and passed `meeting notes action items`. | A broader organize-notes request previously selected Notion. Host tool choice is not guaranteed. |
+| Claude Desktop, 0.1.2 | A fresh chat with only `facet-studio` selected contextual search from “Can you find me a facet to organize meeting notes into action items?” and passed `meeting notes action items`. Approved real installation opened the worksheet without restarting; notes produced a host plan, Maya was edited to Rae, and approved Save succeeded. | A broader organize-notes request previously selected Notion. Host tool choice is not guaranteed. |
 | Claude Desktop, 0.1.1 | Native search click, decline installation with no install, approve real CLI installation, and Open into Capture notes. The host returned a plan; editing Maya to Rae followed by declining Save preserved the edits, and approving Save succeeded. No post-install host restart was needed. | Verified with the bundled local catalogue in this setup, not every host version or catalogue. |
 | Codex, earlier 0.1.0 connection | User-provided inline rendering image; user edited Maya to Rae and reported Save succeeded. Independent stable-Open readback returned Rae with host provenance and edited state. | The newly configured 0.1.1 connection has not had its full visual/interaction walkthrough verified. Do not treat the earlier result as 0.1.1 approval-flow evidence. |
 

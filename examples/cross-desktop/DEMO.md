@@ -2,9 +2,17 @@
 
 Run discovery, real package installation, and an interactive meeting worksheet inside one assistant connection. The host assistant supplies the reasoning. CopilotKit owns frontend-tool execution, approval components, and shared state. There is no second model endpoint or nested chat.
 
-Claude Desktop verified the 0.1.2 natural discovery opening in a fresh chat with only the replacement `facet-studio` connection. Claude Desktop previously completed the 0.1.1 installation and approval workflow. Codex instructions are included, but the 0.1.1 approval flow has not been visually verified there. The earlier 0.1.0 Codex connection rendered inline and saved an edit.
+Claude Desktop verified the full 0.1.2 flow in a fresh chat with only the replacement `facet-studio` connection: natural discovery, approved installation, the installed worksheet, host proposal, editing Maya to Rae, and approved save. No post-install restart was needed. Codex instructions are included, but the 0.1.1 approval flow has not been visually verified there. The earlier 0.1.0 Codex connection rendered inline and saved an edit.
 
-The 0.1.2 opening “Can you find me a facet to organize meeting notes into action items?” selected `studio_search` with query `meeting notes action items` in Claude Desktop. The full installation and approval evidence below is from 0.1.1. A broader request to organize notes previously selected Notion; host instructions guide tool choice but do not guarantee it.
+The 0.1.2 opening “Can you find me a facet to organize meeting notes into action items?” selected `studio_search` with query `meeting notes action items` in Claude Desktop. A broader request to organize notes previously selected Notion; host instructions guide tool choice but do not guarantee it.
+
+## Recording
+
+40-second animated walkthrough assembled from actual Claude Desktop captures; pauses and intermediate host prompts omitted.
+
+![Natural request, contextual search, approved installation, meeting notes, host action plan, Rae edit, and approved save in Claude Desktop](docs/media/meeting-workflow.gif)
+
+[Watch or download the MP4 walkthrough](docs/media/meeting-workflow.mp4).
 
 ## Prepare from source
 
@@ -201,4 +209,4 @@ Open `http://127.0.0.1:4328`. This shows the same meeting worksheet with sample 
 
 The catalogue is fixed at startup and currently contains one real meeting fixture. Each app has one primary UI. CopilotKit uses the installed SDK's `agents__unsafe_dev_only` registration API; this is prototype integration. Client approval controls the demonstrated UI workflow, not authorization against direct MCP tool calls. The server's path, catalogue and installed-byte checks are separate protections.
 
-The native 0.1.1 Claude sequence above has been exercised, including both decline and approve paths. Codex 0.1.1 visual/interaction rehearsal is still pending. This is a viable local demo with explicit limits, not a claim that every host and deployment configuration is fully tested.
+The full native 0.1.2 Claude workflow has been exercised. Both decline paths were also exercised in the earlier 0.1.1 run. The current Codex visual/interaction rehearsal remains pending. This is a viable local demo with explicit limits, not a claim that every host and deployment configuration is fully tested.
