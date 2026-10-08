@@ -2,7 +2,7 @@ body:has(.studio-app) {
   margin: 0;
   background: transparent;
 }
-.studio-app {
+:root:has(.studio-app) {
   --studio-bg: #0a0a12;
   --studio-surface: #12121c;
   --studio-ink: #f5f4ff;
@@ -12,6 +12,9 @@ body:has(.studio-app) {
   --studio-button: #7c3aed;
   --studio-error: #fda4af;
   color-scheme: dark;
+  background: var(--studio-bg);
+}
+.studio-app {
   box-sizing: border-box;
   width: 100%;
   max-width: 520px;
@@ -27,7 +30,7 @@ body:has(.studio-app) {
   font-synthesis: none;
   scrollbar-color: var(--studio-line) var(--studio-bg);
 }
-:root[data-theme="light"] .studio-app {
+:root[data-theme="light"]:has(.studio-app) {
   --studio-bg: #f6f4ef;
   --studio-surface: #fff;
   --studio-ink: #0e0e1a;
