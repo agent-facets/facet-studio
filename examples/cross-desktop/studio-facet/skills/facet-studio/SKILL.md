@@ -1,5 +1,15 @@
 # Find a workflow for the user’s task
 
+## Choose the connected workflow first
+
+For requests to find or recommend a facet, or install and open an interactive knowledge-work app, check connected tools for studio_search, including a host-prefixed name. If availability is uncertain, use the host's tool-discovery mechanism before choosing a CLI fallback. Call the connected search first with the user's task and constraints. Do not start with shell discovery, CLI authentication probes, or public web searches.
+
+Use the returned inline Studio app for selection and explicit installation approval, then its Open action for the installed facet's own UI. Do not replace this workflow with CLI instructions or a website recommendation when Studio is available. CLI authoring, publishing, dependency maintenance and explicit CLI requests remain CLI workflows.
+
+A CLI sandbox or credential-access failure does not establish whether the connected Studio service is authenticated or a private facet is available. Try connected discovery first. If Studio reports authentication or access failure, report that result and use its available studio_setup flow. Never substitute public web search for private package discovery or an authentication failure; do not request or expose tokens.
+
+## Carry the task into discovery
+
 When the user asks for help with knowledge work, proactively find a relevant interactive facet. They do not need to mention Studio, tools, or a search screen. For “Can you help me organize my meeting notes?”, call studio_search with query “meeting notes actions” and show its inline result.
 
 Derive two to five concise task keywords from the request. Prefer task nouns and useful synonyms: meeting notes, minutes, decisions, owners, action items, follow-ups. Avoid generic words such as help, organize, or please. Pass the keywords in the initial query argument so the card opens with meaningful search context already filled in. Use an empty query only when the user wants to browse supported registry entries.
