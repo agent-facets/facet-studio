@@ -161,7 +161,7 @@ Key files, relative to this directory:
 
 Both versions are private and require organization access:
 
-- [@agentfacets/facet-studio 0.1.2](https://agentfacets.io/facets/@agentfacets/facet-studio)
+- [@agentfacets/facet-studio 0.1.3](https://agentfacets.io/facets/@agentfacets/facet-studio)
 - [@agentfacets/meeting-to-action 0.1.2](https://agentfacets.io/facets/@agentfacets/meeting-to-action)
 
 The source setup above is the simplest reproducible route. To demonstrate package travel separately, use a fresh project with your normal Facet home:
@@ -169,7 +169,7 @@ The source setup above is the simplest reproducible route. To demonstrate packag
 ```sh
 export FACET_PACKAGE_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-package-demo.XXXXXX")"
 cd "$FACET_PACKAGE_PROJECT"
-facet add @agentfacets/facet-studio@0.1.2
+facet add @agentfacets/facet-studio@0.1.3
 # Optional independent meeting package:
 facet add @agentfacets/meeting-to-action@0.1.2
 ```
