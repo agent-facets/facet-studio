@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { App } from '@modelcontextprotocol/ext-apps'
 import { type } from 'arktype'
 import './studio-style.css'
+import { contextQuery } from './search'
 import { useAgent } from '@copilotkit/react-core/v2/headless'
 import { CopilotKitCoreReact } from '@copilotkit/react-core/v2/context'
 import {
@@ -124,9 +125,10 @@ function Studio() {
     setNotice(
       `${result.items.length} local ${result.items.length === 1 ? 'facet' : 'facets'} found.`,
     )
-    if (result.query !== undefined) {
-      setQuery(result.query)
-      setSearched(result.query)
+    const initialQuery = contextQuery(result)
+    if (initialQuery !== undefined) {
+      setQuery(initialQuery)
+      setSearched(initialQuery)
     }
   }
 
@@ -140,11 +142,11 @@ function Studio() {
         alive.current = false
       }
     }
-    const app = new App({ name: 'Facet Studio', version: '0.1.1' }, {})
+    const app = new App({ name: 'Facet Studio', version: '0.1.2' }, {})
     appRef.current = app
     app.ontoolinput = (input) => {
       if (!alive.current) return
-      const value = input.arguments?.query
+      const value = contextQuery(input.arguments)
       if (typeof value === 'string') {
         setQuery(value)
         setSearched(value)

@@ -236,7 +236,7 @@ function Workspace() {
                 </div>
                 <div>
                   <dt>Version</dt>
-                  <dd>0.1.1 · local example</dd>
+                  <dd>0.1.2 · local example</dd>
                 </div>
                 <div>
                   <dt>Runtime</dt>

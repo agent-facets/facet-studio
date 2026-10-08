@@ -8,11 +8,13 @@ The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit re
 
 ## Recording
 
-Animated walkthrough captured from Claude Desktop; pauses shortened.
+Animated walkthrough assembled from actual Claude Desktop captures; pauses shortened.
 
 ![Search, install Meeting to Action, and open its worksheet](docs/media/meeting-workflow.gif)
 
 [Watch or download the MP4 recording](docs/media/meeting-workflow.mp4).
+
+The source discovery update is 0.1.2. It retains the query contract, adds intent keyword/synonym matching, and clarifies that a predeclared app bridge does not imply installation. Registry links below describe the already-published 0.1.1 release until 0.1.2 is published.
 
 ## Private registry packages
 
@@ -36,7 +38,7 @@ bun run build
 bun dist/studio-server.js
 ```
 
-Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant to call `studio_search`. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
+Configure `dist/studio-server.js` once as a stdio MCP server using absolute Bun and script paths. Ask the assistant, “Can you help me organize my meeting notes?” The server instructions and search metadata guide the host to search concise task keywords, which prefill the inline card. Tool selection remains host-dependent; the runbook includes a technical troubleshooting fallback. Search the local catalogue, install a selected entry, then use Open to request its returned tool. A host may place that request in the composer for the user to send. Studio publishes the installed app's tools/resources with MCP list-change notifications in the existing connection; no per-facet server configuration is generated or required.
 
 `FACET_STUDIO_PROJECT` configures the consuming project at server launch (default `./studio-project`). `FACET_STUDIO_CATALOG` optionally selects trusted local catalogue configuration. Neither path is accepted from the app UI. Catalogue entries declare local source paths and stable IDs; the build ships the sample source beneath `dist/c`.
 

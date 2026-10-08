@@ -2,15 +2,17 @@
 
 Run discovery, real package installation, and an interactive meeting worksheet inside one assistant connection. The host assistant supplies the reasoning. CopilotKit owns frontend-tool execution, approval components, and shared state. There is no second model endpoint or nested chat.
 
-Use Claude Desktop for the demonstrated 0.1.1 path. Codex instructions are included, but its new 0.1.1 connection still needs a example walkthrough. The earlier 0.1.0 Codex connection rendered inline and saved an edit; that is not proof of the new approval flow.
+Use Claude Desktop to rehearse the source 0.1.2 discovery flow; its natural opening is pending native verification. Claude Desktop previously completed the 0.1.1 installation and approval workflow. Codex instructions are included, but the 0.1.1 approval flow has not been visually verified there. The earlier 0.1.0 Codex connection rendered inline and saved an edit.
 
 ## Recording
 
-Animated walkthrough captured from Claude Desktop; pauses shortened.
+Animated walkthrough assembled from actual Claude Desktop captures; pauses shortened.
 
 ![Search, install Meeting to Action, and open its worksheet](docs/media/meeting-workflow.gif)
 
 [Watch or download the MP4 recording](docs/media/meeting-workflow.mp4).
+
+The source discovery update is version 0.1.2. The 0.1.1 native evidence below establishes installation and approval behavior; the revised natural opening needs a fresh host connection before judging discovery. Server instructions and tool descriptions are guidance, not a guarantee that every host chooses a tool.
 
 ## Prepare from source
 
@@ -113,7 +115,7 @@ Rehearse the entire 0.1.1 flow before relying on Codex for the example. Its earl
 
 All names and notes here are fictional.
 
-1. **Discover, about one minute.** Ask the assistant: “Open Facet Studio's local catalogue so I can find a meeting action-plan tool. Use the connected Studio demo.” If it needs an exact entry point, ask it to call `studio_search` with `{"query":"meeting"}`. Type `meeting` into the inline search and click Search. Explain that this is the configured local catalogue, not a public registry search.
+1. **Discover, about one minute.** Ask the assistant: “Can you help me organize my meeting notes?” The connected server's discovery guidance asks the host to derive relevant task keywords and show a matching inline facet. The first search call carries those keywords, so the search field is already filled in. Explain that this is a configured local catalogue, not a public registry search. Hosts still decide which tools to use; if no card appears, use the troubleshooting step below.
 2. **Review installation, about one minute.** Click Install on Meeting to Action. In the rendered review component, choose Decline. Nothing is installed. Click Install again, then Approve. This invokes the real Facet CLI. When it finishes, choose Open. If the host puts the Open request in its composer, send it. The installed worksheet opens at Capture notes without restarting the connection.
 3. **Use host reasoning, about one minute.** Set the title to `Pilot readiness` and paste the notes below. Choose Ask assistant. Send the plain-language request if it appears in the composer. The host assistant returns an action plan into the worksheet; it may create a new card that opens directly in Review.
 4. **Review and save, about one minute.** Confirm Maya's date, Leo's blank date, and the unassigned feedback task. Change Maya to Rae. Choose Save plan, inspect the approval snapshot, and Decline. The local edit remains; no save runs. Choose Save plan again and Approve. Look for “Approved plan saved for this server session.”
@@ -180,7 +182,7 @@ The selected adapter materializes `skills/facet-studio/assets/studio-server.js` 
 
 | Symptom | Recovery |
 |---|---|
-| No inline card | Confirm this is an MCP Apps-capable host UI, the demo server is enabled, and `studio_search` was called. Check host MCP logs for the configured absolute Bun/server paths. CLI text output alone is not a rendering test. |
+| No inline card | Confirm an MCP Apps-capable host UI and the enabled current demo server. If the host did not discover it from the natural request, ask it to call `studio_search` with `{"query":"meeting notes actions"}`. This technical fallback diagnoses host tool choice; it is not the normal opening script. Check MCP logs for the absolute Bun/server paths. |
 | Old UI or unknown tool | Disable the old demo connection, reconnect the intended entry, and start a fresh chat. Do not ask the assistant to use an older standalone `meeting_open` connection. |
 | Request appears in composer | Send it. The app prepares the host request; it does not promise the host will submit it automatically. |
 | Install cannot finish | Run `facet adapter list` and ensure an adapter is installed. Check the consuming directory is writable and the host's PATH includes the CLI. Preserve the normal Facet home. |

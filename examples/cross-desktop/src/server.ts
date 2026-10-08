@@ -73,7 +73,7 @@ export async function dispatch(
   throw new Error('Unknown tool.')
 }
 
-const server = new McpServer({ name: 'meeting-to-action', version: '0.1.1' })
+const server = new McpServer({ name: 'meeting-to-action', version: '0.1.2' })
 const tools: {
   name: string
   description: string
