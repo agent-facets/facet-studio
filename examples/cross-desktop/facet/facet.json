@@ -1,6 +1,6 @@
 {
   "name": "@agentfacets/meeting-to-action",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Turn meeting notes into an editable action plan in an MCP Apps host.",
   "skills": {

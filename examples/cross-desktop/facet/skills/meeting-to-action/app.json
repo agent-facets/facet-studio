@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "meeting-to-action",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "runtime": "bun",
   "entrypoint": "assets/server.js",
   "openTool": "meeting_open"

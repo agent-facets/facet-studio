@@ -83,7 +83,7 @@ export async function connectBridge(
   failed: (message: string) => void,
   hostPlanReceived: () => void,
   createApp: () => App = () =>
-    new App({ name: 'Meeting to Action', version: '0.1.0' }, {}),
+    new App({ name: 'Meeting to Action', version: '0.1.1' }, {}),
 ): Promise<Bridge> {
   if (window.parent === window) {
     const bridge: Bridge = {

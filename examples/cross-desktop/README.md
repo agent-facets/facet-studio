@@ -2,17 +2,17 @@
 
 A Bun prototype that discovers and installs facets, then opens their packaged apps through one connected MCP server. Studio has its own installable facet containing its UI, server and complete local catalogue. The catalogue currently contains the real Meeting to Action facet and is explicitly local; it does not search the public registry.
 
-The host assistant supplies reasoning. The installed meeting app uses CopilotKit React with AG-UI state. No separate model API or model credential is used.
+The host assistant supplies reasoning. Both Studio and Meeting use CopilotKit registered frontend tools, rendered human approval components, and shared AG-UI state. Search runs through a frontend handler. Installation and saving first await the actual CopilotKit human-in-the-loop renderer; declining produces no install/save call. Approved handlers use the existing MCP transport adapter. No separate model API or model credential is used.
 
 ## Private registry packages
 
-The release manifests prepare `@agentfacets/facet-studio@0.1.0` and `@agentfacets/meeting-to-action@0.1.0` with `private: true`. Publication and registry access are separate from local build verification. Once these versions are published, sign in with an account that has access to the `@agentfacets` scope, then install the selected package in a consuming project:
+The release manifests prepare `@agentfacets/facet-studio@0.1.1` and `@agentfacets/meeting-to-action@0.1.1` with `private: true`. Publication and registry access are separate from local build verification. Once these versions are published, sign in with an account that has access to the `@agentfacets` scope, then install the selected package in a consuming project:
 
 ```sh
 facet login
-facet add @agentfacets/facet-studio@0.1.0
+facet add @agentfacets/facet-studio@0.1.1
 # Optional direct worksheet package:
-facet add @agentfacets/meeting-to-action@0.1.0
+facet add @agentfacets/meeting-to-action@0.1.1
 ```
 
 Studio still ships an explicitly local catalogue containing the meeting package. Its discovery screen installs that bundled source through the real CLI; it does not claim registry search. The unscoped app descriptor IDs and companion directory names remain stable routing identities, separate from scoped registry package names. Both packages carry their own server/UI assets; Studio also carries the complete meeting source fixture.
@@ -77,7 +77,7 @@ The Studio workflow above is the discovery-to-install entry point. To exercise t
 
 After installing the facet, use its installed `skills/meeting-to-action/assets/server.js` companion instead. The example installer writes `claude-desktop.example.json` and `codex.example.toml` in the consuming project with resolved paths. Review and merge the applicable snippet into the host configuration, then reconnect. The installer does not modify global desktop settings.
 
-The host must support MCP Apps to render the worksheet. “Ask assistant for a plan” sends a user message through the MCP Apps bridge. The host assistant calls `meeting_plan`; its validated result becomes an AG-UI `STATE_SNAPSHOT` and updates the CopilotKit `useAgent` state. Hosts may render that result in a new worksheet card; populated host proposals open in Review. Saving edits calls the same tool. Plan data is held in the server session, not persisted to disk; export before ending it. Multiple views attached to one server share this plan.
+The host must support MCP Apps to render the worksheet. “Ask assistant for a plan” sends a user message through the MCP Apps bridge. The host assistant calls `meeting_plan`; its validated result becomes an AG-UI `STATE_SNAPSHOT` and updates the CopilotKit `useAgent` state. Hosts may render that result in a new worksheet card; populated host proposals open in Review. Saving edits opens a CopilotKit approval card showing the action snapshot. Approve executes the registered save handler through the same MCP tool; Decline keeps the local edits without saving. Plan data is held in the server session, not persisted to disk; export before ending it. Multiple views attached to one server share this plan.
 
 ## Package and verify
 
@@ -110,6 +110,8 @@ bun scripts/smoke.ts /absolute/path/to/installed/skills/meeting-to-action/assets
 ```
 
 The smoke client launches the server with `/tmp` as its working directory, lists four tools, reads the inline app resource, accepts a host plan, and rejects an invalid plan.
+
+The new 0.1.1 CopilotKit approval flow has automated runtime coverage with actual mounted hooks, core handlers and rendered buttons. The native evidence below describes the preceding 0.1.0 release; 0.1.1 still requires a native walkthrough.
 
 ## Verified surfaces
 

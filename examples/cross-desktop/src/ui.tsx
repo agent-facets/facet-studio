@@ -7,10 +7,7 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { useAgent } from '@copilotkit/react-core/v2/headless'
-import {
-  CopilotKitContext,
-  CopilotKitCoreReact,
-} from '@copilotkit/react-core/v2/context'
+import { CopilotKitCoreReact } from '@copilotkit/react-core/v2/context'
 import { MeetingAgent } from './agent'
 import {
   connectBridge,
@@ -27,16 +24,13 @@ import {
   type Plan,
 } from './model'
 import './style.css'
+import { Workflow, WorkflowProvider, WorkflowTools } from './workflow'
 
 const meetingAgent = new MeetingAgent()
 const copilotkit = new CopilotKitCoreReact({
   agents__unsafe_dev_only: { meeting: meetingAgent },
 })
-const copilotContext = {
-  copilotkit,
-  executingToolCallIds: new Set<string>(),
-  showIntelligenceIndicator: false,
-}
+const workflow = new Workflow(copilotkit, 'meeting')
 
 /** Render the shared staged worksheet. @returns Accessible facet workspace. */
 function Workspace() {
@@ -131,12 +125,32 @@ function Workspace() {
     setSetup(parseSetup(result.setup))
   }
 
+  workflow.configure({
+    save: {
+      approval: true,
+      run: async (input) => {
+        if (!bridge) throw new Error('Host unavailable.')
+        const result = await bridge.call('meeting_plan', {
+          plan: parsePlan(input.plan),
+        })
+        await meetingAgent.accept(result.plan)
+        setNotice('Approved plan saved for this server session.')
+        return result
+      },
+    },
+  })
+
   /** Save the reviewed plan through the active transport. @returns Completion. */
   async function save() {
     if (!bridge) return
-    const result = await bridge.call('meeting_plan', { plan })
-    await meetingAgent.accept(result.plan)
-    setNotice('Plan saved for this server session.')
+    const result = await workflow.invoke(
+      'save',
+      { plan },
+      'Approve this action plan',
+      `${plan.title}: ${plan.actions.length} actions. ${plan.actions.map((action) => `${action.task} (owner: ${action.owner || 'Unassigned'}, date: ${action.due || 'Not stated'})`).join('; ')}`,
+    )
+    if (result.declined)
+      setNotice('Save declined. Your edits remain in the worksheet.')
   }
 
   /** Download an editable Markdown artifact. @returns Nothing. */
@@ -222,7 +236,7 @@ function Workspace() {
                 </div>
                 <div>
                   <dt>Version</dt>
-                  <dd>0.1.0 · local example</dd>
+                  <dd>0.1.1 · local example</dd>
                 </div>
                 <div>
                   <dt>Runtime</dt>
@@ -543,6 +557,7 @@ function Workspace() {
               </footer>
             </>
           )}
+          <WorkflowTools workflow={workflow} />
           <div className="status" role="status" aria-live="polite">
             {busy || notice}
           </div>
@@ -553,7 +568,7 @@ function Workspace() {
 }
 
 createRoot(document.getElementById('root')!).render(
-  <CopilotKitContext.Provider value={copilotContext}>
+  <WorkflowProvider core={copilotkit}>
     <Workspace />
-  </CopilotKitContext.Provider>,
+  </WorkflowProvider>,
 )

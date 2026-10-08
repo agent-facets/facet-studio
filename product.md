@@ -23,7 +23,7 @@ A browser harness exercises the same interface with editable sample data and sho
 ## Capabilities and Constraints
 
 - A facet packages a skill, web UI assets, and a Bun MCP server as installable files.
-- CopilotKit manages React interface state through AG-UI. The host assistant supplies reasoning and exchanges plan inputs and results through MCP tools.
+- CopilotKit owns frontend-tool execution, rendered review/approval components, and shared AG-UI state across Studio and Meeting. Search runs through a registered frontend handler; installation and saving wait for a human approval component, with decline producing no transport side effect. The host assistant supplies reasoning through MCP, and real host results become AG-UI tool/state events without a second model API.
 - Setup detects the Facet CLI, offers installation when absent, and delegates OAuth device login to `facet login`. Authentication remains owned by the CLI.
 - The embedded workflow requires no independent model API credential.
 - The walkthrough supports meeting notes, decisions, editable actions, owners, dates, and Markdown export.

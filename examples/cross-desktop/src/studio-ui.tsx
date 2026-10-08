@@ -3,6 +3,19 @@ import { createRoot } from 'react-dom/client'
 import { App } from '@modelcontextprotocol/ext-apps'
 import { type } from 'arktype'
 import './studio-style.css'
+import { useAgent } from '@copilotkit/react-core/v2/headless'
+import { CopilotKitCoreReact } from '@copilotkit/react-core/v2/context'
+import {
+  HostStateAgent,
+  Workflow,
+  WorkflowProvider,
+  WorkflowTools,
+} from './workflow'
+const studioAgent = new HostStateAgent('studio', { items: [], query: '' })
+const studioCore = new CopilotKitCoreReact({
+  agents__unsafe_dev_only: { studio: studioAgent },
+})
+const workflow = new Workflow(studioCore, 'studio')
 
 const ItemSchema = type({
   id: 'string > 0',
@@ -91,7 +104,8 @@ function Studio() {
   const [connected, setConnected] = useState(false)
   const [query, setQuery] = useState('')
   const [searched, setSearched] = useState('')
-  const [items, setItems] = useState<CatalogueItem[] | null>(null)
+  const { agent } = useAgent({ agentId: 'studio' })
+  const items = SearchSchema.assert(agent.state).items
   const [setup, setSetup] = useState<SetupStatus>()
   const [setupUnavailable, setSetupUnavailable] = useState(false)
   const [busy, setBusy] = useState<Busy>('')
@@ -103,7 +117,10 @@ function Studio() {
     const result = SearchSchema(value)
     if (result instanceof type.errors)
       throw new Error('Invalid catalogue response.')
-    setItems(result.items)
+    void studioAgent.receive(
+      { ...result, query: result.query ?? searched },
+      'studio_search',
+    )
     setNotice(
       `${result.items.length} local ${result.items.length === 1 ? 'facet' : 'facets'} found.`,
     )
@@ -123,7 +140,7 @@ function Studio() {
         alive.current = false
       }
     }
-    const app = new App({ name: 'Facet Studio', version: '0.1.0' }, {})
+    const app = new App({ name: 'Facet Studio', version: '0.1.1' }, {})
     appRef.current = app
     app.ontoolinput = (input) => {
       if (!alive.current) return
@@ -249,6 +266,11 @@ function Studio() {
     }
   }
 
+  workflow.configure({
+    search: { approval: false, run: (input) => call('studio_search', input) },
+    install: { approval: true, run: (input) => call('studio_install', input) },
+  })
+
   /** Submit a real catalogue query. @param event Form submit. @returns Nothing. */
   function search(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -256,7 +278,12 @@ function Studio() {
     void perform(
       'search',
       async (current) => {
-        const result = await call('studio_search', { query: term })
+        const result = await workflow.invoke(
+          'search',
+          { query: term },
+          'Search local facets',
+          'Read the configured local catalogue.',
+        )
         if (current()) {
           receiveSearch(result)
           setSearched(term)
@@ -271,9 +298,18 @@ function Studio() {
     await perform(
       'install',
       async (current) => {
-        const result = InstallSchema(
-          await call('studio_install', { id: item.id }),
+        const outcome = await workflow.invoke(
+          'install',
+          { id: item.id },
+          `Install ${item.name}?`,
+          'This installs its packaged skills and app into the selected project. Approve to continue.',
         )
+        if (outcome.declined) {
+          if (current())
+            setNotice('Installation declined. Nothing was installed.')
+          return
+        }
+        const result = InstallSchema(outcome)
         if (
           result instanceof type.errors ||
           result.item.id !== item.id ||
@@ -281,13 +317,17 @@ function Studio() {
         )
           throw new Error('Invalid installation response.')
         if (current()) {
-          setItems(
-            (previous) =>
-              previous?.map((entry) =>
-                entry.id === item.id
-                  ? { ...result.item, openTool: result.app.openTool }
-                  : entry,
-              ) ?? [],
+          await studioAgent.receive(
+            {
+              items: SearchSchema.assert(studioAgent.state).items.map(
+                (entry) =>
+                  entry.id === item.id
+                    ? { ...result.item, openTool: result.app.openTool }
+                    : entry,
+              ),
+              query: searched,
+            },
+            'studio_install',
           )
           setNotice(
             `${result.item.name} is installed. Open it in chat to begin.`,
@@ -355,6 +395,7 @@ function Studio() {
         : 'Check CLI'
   return (
     <main className="studio-app" aria-label="Facet Studio discovery">
+      <WorkflowTools workflow={workflow} />
       <header className="studio-header">
         <div className="studio-brand">
           Facet <span>Studio</span>
@@ -517,4 +558,9 @@ function Studio() {
 }
 
 const root = document.getElementById('root')
-if (root) createRoot(root).render(<Studio />)
+if (root)
+  createRoot(root).render(
+    <WorkflowProvider core={studioCore}>
+      <Studio />
+    </WorkflowProvider>,
+  )
