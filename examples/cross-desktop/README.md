@@ -71,6 +71,8 @@ Save updates the live child server's shared worksheet; it does not write a durab
 
 ## Run the browser preview
 
+Set up the pinned tools first; see [Development setup](../../README.md#setup). Without shell activation, prefix each command with `mise exec --`.
+
 ```sh
 cd examples/cross-desktop
 bun install --frozen-lockfile

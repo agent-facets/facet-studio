@@ -20,18 +20,15 @@ Studio 0.1.4 now searches the actual authenticated registry and downloads Meetin
 
 You need repository access, Bun, the Facet CLI, and an MCP Apps-capable host. The commands below are for macOS/Linux shells and do not contain a particular developer's paths.
 
-If Bun or Facet is missing, install them using their official installers, then open a fresh terminal:
-
-```sh
-curl -fsSL https://bun.sh/install | bash
-curl -fsSL https://agentfacets.io/install | bash
-```
+The repository pins Bun, Node.js, and the Facet CLI with [mise](https://mise.jdx.dev/getting-started.html). Install mise and [activate it](https://mise.jdx.dev/getting-started.html#activate-mise) in your shell, then open a fresh terminal.
 
 Clone the private repository with your authorized GitHub account, or start from an existing checkout:
 
 ```sh
 git clone --branch main https://github.com/agent-facets/facet-studio.git
 cd facet-studio
+mise trust mise.toml
+mise install
 cd examples/cross-desktop
 bun --version
 facet --version
@@ -45,7 +42,7 @@ Keep this terminal open for the connection steps. Resolve paths from this checko
 
 ```sh
 export FACET_DEMO_ROOT="$(pwd)"
-export FACET_DEMO_BUN="$(command -v bun)"
+export FACET_DEMO_BUN="$(mise which bun)"
 export FACET_DEMO_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/facet-studio.XXXXXX")"
 printf 'Server: %s\nProject: %s\n' "$FACET_DEMO_ROOT/dist/studio-server.js" "$FACET_DEMO_PROJECT"
 facet adapter list
@@ -84,7 +81,7 @@ Merge the printed `facet-studio` entry into the `mcpServers` object in Claude De
 {
   "mcpServers": {
     "facet-studio": {
-      "command": "/absolute/path/from/command-v-bun",
+      "command": "/absolute/path/from/mise-which-bun",
       "args": ["/absolute/checkout/examples/cross-desktop/dist/studio-server.js"],
       "env": {
         "FACET_STUDIO_PROJECT": "/absolute/fresh/consuming-project",

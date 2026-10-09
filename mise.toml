@@ -1,0 +1,7 @@
+[tools]
+bun = "1.4.2"
+node = "24.21.0"
+"npm:agent-facets" = "0.35.0"
+
+[settings.npm]
+package_manager = "npm"
