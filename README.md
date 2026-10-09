@@ -158,6 +158,23 @@ Run `bun scripts/build-plugin.ts` in the repo root to generate the server file.
 
 ## Development
 
+### Setup
+
+The repo pins Bun, Node.js, and the Facet CLI in `mise.toml`. Install [mise](https://mise.jdx.dev/getting-started.html), then from the repo root:
+
+```bash
+mise trust mise.toml
+mise install
+(cd mcp && mise exec -- bun install --frozen-lockfile)
+(cd examples/cross-desktop && mise exec -- bun install --frozen-lockfile)
+```
+
+`mise install` provides the tools only; each package's JavaScript dependencies are installed separately from its own lockfile.
+
+[Activate mise](https://mise.jdx.dev/getting-started.html#activate-mise) in your shell to put the pinned tools on `PATH` inside the repo, or prefix commands with `mise exec --`. Facet login, adapters, and desktop-host configuration remain manual and use your normal Facet home.
+
+### Workflow
+
 The development loop for facet-studio:
 
 ```bash
